@@ -29,6 +29,27 @@ function fixture(t) {
   return { root, source, catalogs, assets, runtime };
 }
 
+test('90% compatible official messages are accepted, and missing or incompatible messages keep English', t => {
+  for (const matched of [1079, 1080, 1081]) {
+    const f = fixture(t), output = path.join(f.root, 'coverage.js');
+    const english = Object.fromEntries(Array.from({ length: 1200 }, (_, i) => ['key' + i, 'English {name}']));
+    fs.writeFileSync(path.join(f.source, 'resources/ion-dist/i18n/en-US.json'), JSON.stringify(english));
+    const translated = Object.fromEntries(Object.keys(english).slice(0, matched).map(key => [key, '你好 {name}']));
+    translated.key1199 = '参数错误 {other}';
+    saveCatalog(f.catalogs, 'zh-Hans', 'base', Buffer.from(JSON.stringify(translated)), { source: 'fixture' });
+    if (matched < 1080) {
+      assert.throws(() => buildRuntimeLocalization(f.source, f.catalogs, 'zh-Hans', output), /Minimum base coverage is 90%/);
+      assert.equal(fs.existsSync(output), false);
+    } else {
+      const result = buildRuntimeLocalization(f.source, f.catalogs, 'zh-Hans', output);
+      const spec = JSON.parse(fs.readFileSync(result.specOutput));
+      assert.equal(spec.base.key0, '你好 {name}');
+      assert.equal(spec.base.key1198, 'English {name}');
+      assert.equal(spec.base.key1199, 'English {name}');
+    }
+  }
+});
+
 test('runtime builder emits pinned data and manual picker without modifying application or overwriting outputs', t => {
   const f = fixture(t), output = path.join(f.root, 'experiment.js');
   const result = buildRuntimeLocalization(f.source, f.catalogs, 'zh-Hans', output);

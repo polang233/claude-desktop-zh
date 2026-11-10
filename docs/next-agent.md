@@ -1,5 +1,56 @@
 # 下一位 agent 交接：Claude Desktop 中文化与原数据保留
 
+## 2026-10-26 自动中文未启动原因已定位
+
+用户反馈插件启用后原Claude无自动翻译。只读核对唯一npm注册正常，最近host-49kqA1/13FmXs/tkwdfn均preparation-failed、automaticNextLaunch=false。原Claude已更新3.6556.2.0，Gateway配置正常。原目录只读检查与项目内隔离prepareRuntime复现：现有官方中文基础目录匹配34691/37201，覆盖率93.2529%，低于95%门槛；自动缓存后备仍不满足，官方下载返回HTTP403，未生成监听bundle。因此此次尚未进入DevTools阶段，不是此前文件框visibility问题。安装内无zh-Hans基础/动态文件。
+
+证据.handoff/diagnose-20261026/result.json，隔离目录catalogs。未改原profile、安装、插件配置或安全门槛，无窗口操作，无任务恢复。尚未恢复自动中文；后续需取得兼容新版的官方目录，并改进准备失败的用户提示和恢复流程。
+
+
+## 2026-10-24 正式 npm 卡片安装与新进程中文通过
+
+从magpie非官方GitHub卡片安装0.1.1，实际注册magpie-claude-zh@latest且唯一，四个其他插件条目保留。正式包第一次新启动PID74868返回FocusChanged、pickerIdentityBits126，其中visibility位为false，其余身份检查通过；脚本已提交但文件框停住。通过UI取消文件框，再通过File→Exit正常退出，零进程及任务标记检查通过后从原入口重开。第二次PID66528、ticks639283786023493830，单次提交、SelectedNative、bits127、Applied。原窗口简体中文目视通过，工具窗口全部关闭。证据npm-first-launch-report.json、npm-final-launch-report.json。当前保持正式npm插件和原中文窗口运行。
+
+启动文件框visibility瞬态仍有偶发失败，未改写已发布包；已在Release及Issue回复补充此限制和正常退出重试办法。此前候选通过和33原数据文件哈希一致结果保持，本次正式包启动后没有再做退出哈希比较。Issue保持打开供反馈。无任务执行、无原profile外部写入。
+
+
+## 2026-10-24 0.1.1 npm/GitHub 已发布并回复 Issue
+
+npm登录失效后已由用户完成重新登录及本次发布验证，CLI返回+magpie-claude-zh@0.1.1。registry处理后latest=0.1.1，下载769914字节包，SHA256=1feba170a588e9b354ffe0c345cd067bc33f1718c3aa81ad8119a4fe3d1e960a，与冻结包及GitHub资产一致。冷缓存按包名安装、CLI/设置页/图标/默认简体通过，官方magpie源码宿主+Bun1.4.3加载三个工具并正常退出。证据npm-validation.json及host-validation-registry.json。
+
+GitHub v0.1.1已上线，发布提交712072fafa4f1e79f38aaad66aaf0251ca884c56。Issue #1已回复，评论6372378628，解释导入/导出根因、修复、实机版本及范围。正文均已读回核对；Issue保持打开供报告者反馈。
+
+通过magpie GUI移除candidate目录条目，再从非官方GitHub卡片安装，实际注册magpie-claude-zh@latest、唯一条目。卡片图标/中文简介/版本0.1.1实机显示通过，host-dbJVag默认简体、RuntimeSetupReady/changed=false、watching。当前正在正式npm安装后的原入口启动复核；本次发布前候选的完整自动启动通过及33文件原数据一致证据见此前记录。
+
+
+## 2026-10-24 GitHub 0.1.1 已发布，npm 等待重新登录
+
+最终发布提交712072fafa4f1e79f38aaad66aaf0251ca884c56已推送main，GitHub v0.1.1已发布并读回资产哈希一致。最终包769914字节、40文件，SHA256=1feba170a588e9b354ffe0c345cd067bc33f1718c3aa81ad8119a4fe3d1e960a；隔离安装与实机验收候选运行文件逐字节一致，仅README更新验收版本说明。发布检出整仓151项150通过、1环境跳过，check与差异检查通过。
+
+npm publish返回E404，随后whoami返回E401，登录已失效。已发起npm11.21 browser=false登录，等待用户网页登录，npm0.1.1尚未发布。Issue回复已拟稿但尚未发送，待npm发布读回后执行。当前Claude已正常退出，magpie仍使用已验收candidate目录，正式npm安装切换待发布后处理。下一步使用release-20261024/check-registry.mjs校验新版registry包，不运行旧日期的校验脚本。
+
+
+## 2026-10-24 0.1.1 自动启动实机通过，准备发布
+
+Issue #1 词法导出识别修复已通过原 Claude 3.1623.1.0 实机。冷启动期间另修复前端焦点、开发者工具打开后备流程、Console 输入节点刷新和文件框关闭后的回执焦点处理。最新适配器90项自检通过；整仓151项150通过、0失败、1环境跳过，最后一次输入节点修正后的定向编译测试通过，发布检出整仓复核随后执行。
+
+magpie0.1.1340安装候选目录，默认简体及自动加载；原入口PID71564，唯一脚本提交，SelectedNative、pickerIdentityBits127、Applied，窗口中文已目视核对，辅助窗口全部关闭。证据.handoff/release-20261024/automatic-final-report.json。正常菜单退出后零Claude进程，基线33份配置/会话/历史文件哈希全部不变，profile-after-final.json。此前失败及迟到回执保留于私人报告，不作为最终通过依据。未执行历史任务或Cowork任务，未验证报告者3.1623.0.0完整安装、其他机器或繁体。
+
+当前magpie仍注册candidate/node_modules/magpie-claude-zh；Claude正常退出。最终包需要从发布检出重新冻结，旧77f7及44b7哈希均已过时。npm0.1.1、GitHub Release及Issue回复尚未执行。用户已授权通过后发布和回复。原test分支HEAD89bb330及未提交成果保留。
+
+
+## 2026-10-24 0.1.1 候选已完成，正在实机验收
+
+Issue #1 修复和151项整仓回归已完成：150通过、0失败、1环境跳过；词法识别本模块命名导出，本机新版资源得到qf。已在magpie安装候选tarball的隔离目录，默认简体和监听就绪。首次自动启动未打开DevTools；手动打开后诊断脚本超时，但稍后收到前端成功标记，原窗口中文及两条目录加载已确认。正常退出后33份原配置/会话/历史文件哈希全部未变。当前第二次原入口启动正在验收，不能提前宣称完整自动启动通过。完整状态见HANDOFF顶部和.handoff/release-20261024/acceptance-progress.json。
+
+用户已授权通过后发布npm0.1.1/GitHub Release并回复Issue，无需再问发布授权。尚未提交发布或回复。原分支HEAD89bb330及未提交成果保留；发布检出为.handoff/release-20261019/publish，分支fix/language-store-export-0.1.1。当前magpie是候选文件夹安装，完成后切回正式npm。已有两个实体Esc中止了桌面工具；用户“继续”已恢复授权，若再次触发应遵循工具停止提示。
+
+## 2026-10-23 Issue #1 核查结果
+
+本机 Claude 3.1623.1.0 只读生成已复现错误 storeExport=$n；shared-52-CTBp1Kd0.js 内首个 ey as $n 属于 import，真实本模块导出为 ey as qf。现有5项运行时测试全过，尚缺此回归。Issue B 能解决本机别名探测，应完善为只识别本模块命名导出、处理空白/多个 export、排除 re-export及歧义拒绝，保留现有运行时接口校验。A 只查名字出现，合法 ESM 反例失败；C 的形状检查已存在，不能单独解决生成错误。后续重建整套哈希产物，不硬编码 qf。
+
+此轮为方案评审，产品实现和发布状态保持；尚未对新版本做 GUI 验收，也未取得报告者3.1623.0.0完整资源。已记录真实资源、A/B原样代码与隔离导入验证，见 .handoff/issue-1-review-20261023/review.md 和 result.json。原测试分支、HEAD及未提交成果保留，日常应用与profile未写入。
+
 ## 2026-10-19 README 展示更新
 
 对外README补齐动态npm版本徽章、包名/链接、v0.1.0发布入口和反馈入口，安装优先按npm包名添加，说明旧文件夹条目切换。图片及用户文档采用完整GitHub地址；安装/常见问题文档同步。GitHub Markdown渲染及差异检查通过，npm版本读回0.1.0。仅文档更新，npm已发布包的README仍为发版时快照，后续版本同步；无需重复发布0.1.0。

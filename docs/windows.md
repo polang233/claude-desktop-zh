@@ -42,7 +42,7 @@ node bin/claude-3p-zh.mjs catalog fetch --locale zh-Hans --kind base
 node bin/claude-3p-zh.mjs catalog fetch --locale zh-Hans --kind dynamic
 ```
 
-`--url` 可指定带版本查询参数的对应官方 URL。返回 403 时使用缓存或手动导出的 JSON；工具不绕过登录、验证码或网站验证。
+`--url` 可指定带版本查询参数的对应官方 URL。工具以普通浏览器请求头获取公开语言文件；仍返回 403 时使用缓存或手动导出的 JSON，不绕过登录、验证码或网站验证。
 
 ```powershell
 node bin/claude-3p-zh.mjs catalog import --locale zh-Hant --kind base --file '<官方繁体JSON>'
@@ -57,7 +57,7 @@ node bin/claude-3p-zh.mjs catalog import --locale zh-Hant --kind dynamic --file 
 node bin/claude-3p-zh.mjs plan --source '<Claude应用目录>' --locale zh-Hans
 ```
 
-`plan` 不修改应用。查看匹配率、缺失数量和占位符回退数量。基础语言包匹配率低于 95% 时，安装停止。
+`plan` 不修改应用。查看匹配率、缺失数量和占位符回退数量。基础语言包匹配率低于 90% 时，安装停止。
 
 ### 4. 创建独立中文副本
 

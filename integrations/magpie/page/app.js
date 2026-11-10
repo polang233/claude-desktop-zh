@@ -3,16 +3,12 @@
   const options = await magpie.options.get();
   const valid = value => ['zh-Hans', 'zh-Hant'].includes(value);
   const current = valid(options.locale) ? options.locale : 'zh-Hans';
-  const inputs = [...document.querySelectorAll('input[name="locale"]')];
+  const select = document.getElementById('locale');
   const automatic = document.getElementById('runtime-auto');
   automatic.checked = options.runtimeAutoLoad !== false;
-  function render(value) {
-    for (const input of inputs) input.checked = input.value === value;
-  }
-  render(current);
-  for (const input of inputs) input.addEventListener('change', () => render(input.value));
+  select.value = current;
   document.getElementById('save').addEventListener('click', async () => {
-    const locale = inputs.find(input => input.checked)?.value;
+    const locale = select.value;
     if (!valid(locale)) return;
     const save = document.getElementById('save'), status = document.getElementById('status');
     const enabled = automatic.checked;

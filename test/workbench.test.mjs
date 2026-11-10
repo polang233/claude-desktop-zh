@@ -164,21 +164,16 @@ test('one active job, shared-controller busy refusal, bounded history, and await
   assert.equal(closed, true);
 });
 
-test('concurrent opens share one server, actual auth method authorizes, cleanup allows reopen', async () => {
+test('concurrent opens share one server and cleanup allows reopen', async () => {
   const hooks = await ClaudeChinesePlugin({}, options);
   try {
-    assert.equal(hooks.auth.provider, 'claude-desktop-3p-zh');
-    assert.equal(hooks.auth.authorize, undefined);
-    const [first, second, login] = await Promise.all([
+    assert.equal(hooks.auth, undefined);
+    const [first, second] = await Promise.all([
       hooks.tool.claude_zh_workbench.execute({}).then(JSON.parse),
-      hooks.tool.claude_zh_workbench.execute({}).then(JSON.parse),
-      hooks.auth.methods[0].authorize()
+      hooks.tool.claude_zh_workbench.execute({}).then(JSON.parse)
     ]);
     assert.match(first.url, /^http:\/\/127\.0\.0\.1:\d+\/#token=[a-f0-9]{64}$/);
     assert.equal(second.url, first.url);
-    assert.equal(login.url, first.url);
-    assert.equal(login.method, 'code');
-    assert.equal((await login.callback()).type, 'failed');
     const page = await fetch(first.url);
     assert.equal(page.status, 200);
     assert.match(await page.text(), /locale-select/);

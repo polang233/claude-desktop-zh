@@ -8,11 +8,11 @@
 [![Windows](https://img.shields.io/badge/platform-Windows-0078d4)](https://github.com/polang233/claude-desktop-zh#%E5%AE%89%E8%A3%85)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/polang233/claude-desktop-zh/blob/main/LICENSE)
 
-在 magpie 中安装，让原版 Claude Desktop 的第三方 Gateway 模式使用官方中文界面，继续使用原来的设置、会话和历史。
+在 magpie 中安装，让原版 Claude Desktop 的第三方 Gateway 模式使用中文界面，继续使用原来的设置、会话和历史。
 
 默认简体中文。使用时保持 magpie 运行，从原来的 Claude 入口打开即可。
 
-**npm 包：[`magpie-claude-zh`](https://www.npmjs.com/package/magpie-claude-zh)** · [v0.1.1](https://github.com/polang233/claude-desktop-zh/releases/tag/v0.1.1) · [全部版本](https://github.com/polang233/claude-desktop-zh/releases) · [反馈问题](https://github.com/polang233/claude-desktop-zh/issues)
+**npm 包：[`magpie-claude-zh`](https://www.npmjs.com/package/magpie-claude-zh)** · [最新发布](https://github.com/polang233/claude-desktop-zh/releases/latest) · [全部版本](https://github.com/polang233/claude-desktop-zh/releases) · [反馈问题](https://github.com/polang233/claude-desktop-zh/issues)
 
 ## 安装
 
@@ -36,16 +36,19 @@
 
 ## 原理
 
-翻译来自 Claude 官方中文语言文件。插件在每次 Claude 启动后运行本地脚本，将对应版本的中文资源加载到当前窗口内存，并切换语言。
+翻译来自 Claude 官方中文语言文件。插件在 Claude 启动后将对应版本的中文资源加载到当前窗口内存，不修改应用安装目录。
 
-首次准备会备份应用设置，再开启自动加载所需的开发者工具选项。语言资源保存在本机，Claude 继续使用原来的数据目录。少量未匹配的文字沿用英文。
+首次准备会备份应用设置并开启自动加载所需的开发者工具选项。语言资源保存在本机，Claude 继续使用原来的数据目录；少量未匹配的文字沿用英文。
 
 ## 说明
 
-已在 Windows 商店版 Claude 3.1623.1.0 与 magpie 0.1.1340 实测原入口启动后自动加载简体中文。首次安装流程此前已在 Claude 2.42304.0 通过。Claude 更新后需要重新检查语言资源是否兼容。
+已在 Windows 商店版 Claude 4.23118.1.0 实测运行时加载简体中文。Claude 4.x 的前端使用 `ion-dist.asar`，插件只读加载，不写入 `WindowsApps`。macOS 支持资源检查和手动运行时导出，尚未实现自动启动注入，也不修改签名。
+
+Claude 更新后，请在 magpie 中关闭再启用插件，让它重新生成对应版本的语言资源。
 
 - [安装步骤](https://github.com/polang233/claude-desktop-zh/blob/main/docs/first-install.md)
 - [插件设置与常见问题](https://github.com/polang233/claude-desktop-zh/blob/main/docs/magpie.md)
+- [macOS 手动运行时说明](https://github.com/polang233/claude-desktop-zh/blob/main/docs/macos.md)
 - [开发与验证](https://github.com/polang233/claude-desktop-zh/blob/main/docs/README.md)
 
 项目代码采用 MIT 许可，官方语言资源的权利归其所有者，见 [NOTICE](https://github.com/polang233/claude-desktop-zh/blob/main/NOTICE)。

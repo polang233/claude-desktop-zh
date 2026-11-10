@@ -37,18 +37,6 @@ export const ClaudeChinesePlugin = async (_input, options = {}) => {
         args: { type: 'object', properties: {}, additionalProperties: false },
         execute: async () => JSON.stringify(await opened())
       }
-    },
-    auth: {
-      provider: 'claude-desktop-3p-zh',
-      methods: [{
-        type: 'oauth',
-        label: '语言资源维护',
-        async authorize() {
-          const page = await opened();
-          return { url: page.url, method: 'code', instructions: '请在打开的页面管理语言资源，完成后关闭此窗口。', callback: async () => ({ type: 'failed' }) };
-        }
-      }],
-      async loader() { return {}; }
     }
   };
 };

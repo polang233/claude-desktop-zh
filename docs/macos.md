@@ -1,13 +1,16 @@
 # macOS 与现有汉化项目
 
-macOS 的应用资源通常在 `/Applications/Claude.app/Contents/Resources`，主界面同样可能有 `ion-dist/i18n` 和 `ion-dist/assets/v1`。CLI 可以对显式指定的 `.app` 运行 `inspect` 和 `plan`：
+macOS 的应用资源通常在 `/Applications/Claude.app/Contents/Resources`，主界面同样可能有 `ion-dist` 目录或 `ion-dist.asar`。CLI 可以发现 `.app`，并对它运行 `inspect` 和 `runtime-export`；`plan` 仅适用于未打包的旧目录布局：
 
 ```sh
 sh scripts/claude-3p-zh.sh inspect --source /Applications/Claude.app
-sh scripts/claude-3p-zh.sh plan --source /Applications/Claude.app --locale zh-Hant
+sh scripts/claude-3p-zh.sh runtime-export --source /Applications/Claude.app \
+  --locale zh-Hans --catalog-dir .catalogs --output .local/macos-language.js
 ```
 
-尚未在 Mac 实机验证这些路径、缓存格式、界面、Keychain、Code 或 Cowork。`prepare-copy` 和 `launch` 在 macOS 停止执行，不把生成计划称为安装成功。
+生成 `.local/macos-language.js.picker.js` 和 `.spec.json` 后，在 Claude 的 DevTools Console 中运行 picker 脚本并选择 spec。它只在当前窗口内存中加载中文，不修改 `.app`、签名或应用数据。自动启动注入仍只在 Windows 实现；macOS 目前是手动运行时注入。
+
+`prepare-copy` 和 `launch` 在 macOS 停止执行。尚未在 Mac 实机验证路径、缓存格式、界面、Keychain、Code 或 Cowork；不要在发布说明中把 macOS 称为已自动支持。
 
 ## 签名限制
 

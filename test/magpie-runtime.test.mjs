@@ -105,6 +105,30 @@ test('disabled or unsupported modes never prepare catalogs or start a process', 
   }
 });
 
+test('preparation failures publish actionable explanations without private CLI diagnostics', async t => {
+  for (const [error, code, message] of [
+    ['Error: Official catalog returned HTTP 403. private-token', 'catalog-download-denied', /下载被拒绝/],
+    ['Missing compatible zh-Hans base/dynamic catalogs. private-path', 'catalog-coverage-low', /90%/],
+    ['No 3p Gateway profile found. private-path', 'gateway-not-configured', /Gateway/],
+    ['Unsupported language-store export. private-path', 'frontend-changed', /尚未适配/],
+    ['Unknown failure private-token', 'preparation-failed', /准备失败/]
+  ]) {
+    const f = fixture(t), toasts = [];
+    const runtime = createRuntimeHost({ directory: f.root, client: { tui: { showToast: async ({ body }) => toasts.push(body.message) } } }, {}, {
+      runtimeConfiguration: () => ({ cwd: project }), prepareRuntime: async () => { throw new Error(error); }
+    }, { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => assert.fail('Failed preparation must not launch UI') });
+    const state = await runtime.start();
+    assert.equal(state.state, 'preparation-failed');
+    assert.equal(state.failureCode, code);
+    assert.equal(state.automaticNextLaunch, false);
+    assert.match(state.message, message);
+    assert.deepEqual(toasts, [state.message]);
+    assert.doesNotMatch(JSON.stringify(state), /private-token|private-path/);
+    const saved = JSON.parse(fs.readFileSync(path.join(state.reportDirectory, 'status.json')));
+    assert.equal(saved.failureCode, code);
+  }
+});
+
 test('runtime controller uses the CLI and only imports after a missing-catalog refusal', async () => {
   const calls = []; let exports = 0;
   const controller = createController({ projectDirectory: project, sourceDirectory: 'original', catalogDirectory: 'catalogs' }, async (_config, args) => {

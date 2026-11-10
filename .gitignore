@@ -1,5 +1,6 @@
 .catalogs/
 .handoff/
+.local/
 node_modules/
 dist/
 *.log

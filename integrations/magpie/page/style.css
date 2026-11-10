@@ -1,3 +1,11 @@
 :root {color-scheme:light dark;font-family:system-ui,sans-serif;background:var(--magpie-bg,Canvas);color:var(--magpie-fg,CanvasText)}
-body {margin:0;padding:28px} main {max-width:720px} h1 {font-size:23px} h2 {font-size:17px;margin-top:30px} p,li {line-height:1.7} ol {padding-left:24px} li {margin:6px 0} fieldset {border:1px solid GrayText;border-radius:8px;padding:16px} label {display:block;margin:10px 0} button {font:inherit;padding:8px 14px;margin-top:14px} button:disabled {opacity:.6} #status {min-height:24px}
-.plugin-heading {display:flex;align-items:center;gap:14px;margin-bottom:20px} .plugin-heading h1 {margin:0 0 4px} .plugin-heading span {font-size:13px;color:GrayText} .plugin-heading img {flex:none;object-fit:contain}
+body {margin:0;padding:28px} main {max-width:560px} h1 {font-size:23px} p {line-height:1.7}
+button,select {font:inherit;padding:8px 14px;border-radius:8px;border:1px solid GrayText;background:Canvas;color:inherit}
+button {cursor:pointer} button:disabled {opacity:.6;cursor:default} #status {min-height:24px;margin:0;color:GrayText}
+.plugin-heading {display:flex;align-items:center;gap:14px;margin-bottom:20px}
+.plugin-heading h1 {margin:0 0 4px} .plugin-heading span {font-size:13px;color:GrayText} .plugin-heading img {flex:none;object-fit:contain}
+.summary {margin:0 0 22px}
+.field {display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 12px}
+.check {display:flex;align-items:center;gap:10px;margin:0 0 20px}
+.actions {display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.note {margin-top:24px;font-size:13px;color:GrayText}

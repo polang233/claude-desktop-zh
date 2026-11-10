@@ -13,6 +13,26 @@ const canonical = value => JSON.stringify(value && typeof value === 'object'
   : value);
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
+// Publish only fixed explanations. CLI errors can contain private paths or URLs.
+function preparationFailure(error) {
+  const text = error instanceof Error ? error.message : '';
+  if (/Official catalog returned HTTP 403/.test(text)) return {
+    failureCode: 'catalog-download-denied',
+    message: '官方语言文件下载被拒绝。现有中文资源不足，请稍后重新启用插件重试。'
+  };
+  if (/Missing compatible zh-Han[st] base\/dynamic catalogs/.test(text)) return {
+    failureCode: 'catalog-coverage-low',
+    message: '中文资源覆盖率需达到 90%。请更新语言资源后重新启用插件。'
+  };
+  if (/Gateway|No 3p/.test(text)) return {
+    failureCode: 'gateway-not-configured', message: '请先将 Claude 配置为第三方 Gateway 模式，再重新启用插件。'
+  };
+  if (/Unsupported|anchor changed|Language runtime changed/.test(text)) return {
+    failureCode: 'frontend-changed', message: '当前 Claude 的语言模块尚未适配，请检查插件更新。'
+  };
+  return { failureCode: 'preparation-failed', message: '中文准备失败。请检查 Node.js 22 或以上版本及网络连接，再重新启用插件。' };
+}
+
 function identifiesPlugin(spec) {
   if (path.isAbsolute(spec)) {
     return [projectDirectory, pluginDirectory, path.join(pluginDirectory, 'server.mjs')].some(directory => samePath(spec, directory));
@@ -50,7 +70,8 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     const message = next.state === 'waiting-for-normal-exit' && previous.state !== next.state
       ? '请通过 Claude 的“文件 → 退出”正常退出，等待中文准备完成。'
       : next.state === 'watching' && previous.state !== next.state && next.setupChanged === true
-        ? '中文已准备好，从原来的入口打开 Claude 即可。' : null;
+        ? '中文已准备好，从原来的入口打开 Claude 即可。'
+        : next.state === 'preparation-failed' && previous.state !== next.state ? next.message : null;
     if (message) {
       try { Promise.resolve(input.client?.tui?.showToast({ body: { title: 'Claude 中文', message, variant: 'info' } })).catch(() => {}); } catch {}
     }
@@ -121,9 +142,9 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
         child.stdout.unref?.();
         child.stderr.unref?.();
         return current;
-      } catch {
+      } catch (error) {
         if (child && stopFile) { try { fs.writeFileSync(stopFile, 'Stop after watcher initialization failure.\n'); } catch {} }
-        publish({ ...current, state: 'preparation-failed', automaticNextLaunch: false });
+        publish({ ...current, state: 'preparation-failed', automaticNextLaunch: false, ...preparationFailure(error) });
         return current;
       }
     })();

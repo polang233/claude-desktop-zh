@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { parseCatalog, mergeCatalog, saveCatalog, bestCatalog } from '../lib/catalogs.mjs';
+import { parseCatalog, mergeCatalog, saveCatalog, bestCatalog, fetchCatalog } from '../lib/catalogs.mjs';
 import { patchRuntime, patchSelector } from '../lib/patch.mjs';
 import { decodeAddress } from '../lib/cache.mjs';
 import { validateGateway } from '../lib/install.mjs';
@@ -52,6 +52,21 @@ test('unknown frontend anchors are refused', () => {
 test('rejects unavailable and invalid locale selection', () => {
   assert.throws(() => patchRuntime('', 'zh-Hant', ['zh-Hans']), /unavailable/);
   assert.throws(() => saveCatalog('.', '../x', 'base', Buffer.from('{}'), {}), /Language/);
+});
+test('official catalog fetch uses browser request headers without changing the URL contract', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), '3p-zh-fetch-'));
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; fs.rmSync(dir, { recursive: true, force: true }); });
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), 'https://claude.ai/i18n/zh-Hans.json');
+    assert.match(init.headers['user-agent'], /Mozilla\/5\.0/);
+    assert.equal(init.headers.referer, 'https://claude.ai/');
+    assert.equal(init.redirect, 'error');
+    const messages = Object.fromEntries(Array.from({ length: 1000 }, (_, index) => [`key-${index}`, `中文 ${index}`]));
+    return new Response(JSON.stringify(messages), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const saved = await fetchCatalog(dir, 'zh-Hans', 'base', 'https://claude.ai/i18n/zh-Hans.json');
+  assert.equal(saved.keys, 1000);
 });
 test('cache addresses are bounded and external filenames cannot escape root', () => {
   assert.throws(() => decodeAddress('.', 0, 10), /address/);

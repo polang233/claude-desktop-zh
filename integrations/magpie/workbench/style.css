@@ -9,7 +9,11 @@ dt { color: GrayText; }
 dd { margin: 0; overflow-wrap: anywhere; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 button, select { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid GrayText; background: Canvas; color: inherit; }
-select { margin-left: 8px; }
+select { margin-left: 0; }
+.field { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+details { margin-top: 16px; }
+summary { cursor: pointer; color: GrayText; }
+details .actions { margin-top: 12px; }
 [hidden] { display: none !important; }
 button[data-write="true"] { border-color: currentColor; }
 button:disabled { opacity: 0.55; }

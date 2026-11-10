@@ -1,5 +1,80 @@
 # 开发交接
 
+## 2026-11-10 Claude 4.x 归档前端适配与运行时实测
+
+Claude 已从 3.6556.2.0 更新到 4.23118.1.0。前端不再提供 `resources/ion-dist` 目录，改为 `resources/ion-dist.asar`；最近一次自动加载仍在用 `sourceExecutable=Claude_3.6556.2.0` 的旧载荷，因此更新后不会加载中文。
+
+本轮新增 `lib/asar.mjs`，让安装发现、兼容检查和 `runtime-export` 能只读解析 `ion-dist.asar`。4.x 的前端仍保留 `meta[name="i18n-catalogs"]`、`spa:locale` 和语言 store，运行时注入方式沿用；资源写入对 asar 明确标记为不可用，仍走运行时路线。应用关闭时除 `Get-AppxPackage` 外，还会从运行中的 `claude.exe` 路径回退发现安装。
+
+同时移除了插件暴露的 OAuth「语言资源维护」登录入口。它只是打开本地维护页的旧通道，会让 Magpie 显示无意义的登录项；维护页现在只通过 `claude_zh_workbench` 工具打开。设置页也只保留语言、自动加载和保存。Magpie 的 `plugin-providers.json` 里旧版残留 provider 记录已清理并备份，重启后不再出现。
+
+官方 `https://claude.ai/i18n/zh-Hans.json` 默认 Node 请求会 403；补浏览器 `User-Agent`、`Accept`、`Accept-Language` 和 `Referer` 后可正常下载。最新简体中文基础 42,695 条中匹配 42,171 条，覆盖率 98.77%；动态 51/51 条。
+
+实机单次注入：对 Claude 4.23118.1.0 当前窗口执行 `-ApplyOnce -ActivateClaude`，返回 `Applied`、`SelectedNative`、`pickerIdentityBits=127`，文件框为 `#32770`，写入 5,447 字符；界面菜单显示「文件/编辑/视图/帮助」。随后本地构建 `magpie-claude-zh@1.0.0`，把 Magpie 依赖固定为本地 tarball，重启后从原入口启动新进程 PID 48180，监听返回 `Applied`，截图确认简体界面。
+
+繁体测试：将插件选项临时改为 `zh-Hant`，新进程 41528 首次自动尝试在文件框焦点阶段返回 `FocusChanged`；取消 `#32770` 文件框后 `ApplyOnce` 返回 `Applied`，截图确认「新增 / 搜尋 / 自訂」等繁体文案。之后已把插件选项恢复 `zh-Hans`；当前窗口仍是繁体，下次启动为简体。
+
+回归 159 项：158 通过、0 失败、1 项文件 symlink 环境跳过；CLI help、包检查和 `git diff --check` 通过。新增 `test/asar.test.mjs` 覆盖 ASAR 文件表、Windows 4.x 安装发现和运行时 spec；`test/macos.test.mjs` 覆盖 `.app` 发现、`ion-dist.asar` 检查和手动运行时导出夹具。
+
+macOS 范围：只读发现、检查和 `runtime-export` 已兼容 `.app` 布局；没有实现自动 DevTools 注入，未在 Mac 实机验证，不把 1.0.0 的 macOS 路线称为自动支持。当前 Magpie 的 `plugins/package.json` 依赖为本地 `file:F:/Code/Projects/claude-desktop-3p-zh/.local/package-release/magpie-claude-zh-1.0.0.tgz`，重启后仍为 1.0.0。npm 发布与 4.x 其他机器验证未执行。
+
+## 2026-10-26 自动中文未启动原因已定位
+
+用户反馈插件启用后原Claude无自动翻译。只读核对唯一npm注册正常，最近host-49kqA1/13FmXs/tkwdfn均preparation-failed、automaticNextLaunch=false。原Claude已更新3.6556.2.0，Gateway配置正常。原目录只读检查与项目内隔离prepareRuntime复现：现有官方中文基础目录匹配34691/37201，覆盖率93.2529%，低于95%门槛；自动缓存后备仍不满足，官方下载返回HTTP403，未生成监听bundle。因此此次尚未进入DevTools阶段，不是此前文件框visibility问题。安装内无zh-Hans基础/动态文件。
+
+证据.handoff/diagnose-20261026/result.json，隔离目录catalogs。未改原profile、安装、插件配置或安全门槛，无窗口操作，无任务恢复。尚未恢复自动中文；后续需取得兼容新版的官方目录，并改进准备失败的用户提示和恢复流程。
+
+
+## 2026-10-24 正式 npm 卡片安装与新进程中文通过
+
+从magpie非官方GitHub卡片安装0.1.1，实际注册magpie-claude-zh@latest且唯一，四个其他插件条目保留。正式包第一次新启动PID74868返回FocusChanged、pickerIdentityBits126，其中visibility位为false，其余身份检查通过；脚本已提交但文件框停住。通过UI取消文件框，再通过File→Exit正常退出，零进程及任务标记检查通过后从原入口重开。第二次PID66528、ticks639283786023493830，单次提交、SelectedNative、bits127、Applied。原窗口简体中文目视通过，工具窗口全部关闭。证据npm-first-launch-report.json、npm-final-launch-report.json。当前保持正式npm插件和原中文窗口运行。
+
+启动文件框visibility瞬态仍有偶发失败，未改写已发布包；已在Release及Issue回复补充此限制和正常退出重试办法。此前候选通过和33原数据文件哈希一致结果保持，本次正式包启动后没有再做退出哈希比较。Issue保持打开供反馈。无任务执行、无原profile外部写入。
+
+
+## 2026-10-24 0.1.1 npm/GitHub 已发布并回复 Issue
+
+npm登录失效后已由用户完成重新登录及本次发布验证，CLI返回+magpie-claude-zh@0.1.1。registry处理后latest=0.1.1，下载769914字节包，SHA256=1feba170a588e9b354ffe0c345cd067bc33f1718c3aa81ad8119a4fe3d1e960a，与冻结包及GitHub资产一致。冷缓存按包名安装、CLI/设置页/图标/默认简体通过，官方magpie源码宿主+Bun1.4.3加载三个工具并正常退出。证据npm-validation.json及host-validation-registry.json。
+
+GitHub v0.1.1已上线，发布提交712072fafa4f1e79f38aaad66aaf0251ca884c56。Issue #1已回复，评论6372378628，解释导入/导出根因、修复、实机版本及范围。正文均已读回核对；Issue保持打开供报告者反馈。
+
+通过magpie GUI移除candidate目录条目，再从非官方GitHub卡片安装，实际注册magpie-claude-zh@latest、唯一条目。卡片图标/中文简介/版本0.1.1实机显示通过，host-dbJVag默认简体、RuntimeSetupReady/changed=false、watching。当前正在正式npm安装后的原入口启动复核；本次发布前候选的完整自动启动通过及33文件原数据一致证据见此前记录。
+
+
+## 2026-10-24 GitHub 0.1.1 已发布，npm 等待重新登录
+
+最终发布提交712072fafa4f1e79f38aaad66aaf0251ca884c56已推送main，GitHub v0.1.1已发布并读回资产哈希一致。最终包769914字节、40文件，SHA256=1feba170a588e9b354ffe0c345cd067bc33f1718c3aa81ad8119a4fe3d1e960a；隔离安装与实机验收候选运行文件逐字节一致，仅README更新验收版本说明。发布检出整仓151项150通过、1环境跳过，check与差异检查通过。
+
+npm publish返回E404，随后whoami返回E401，登录已失效。已发起npm11.21 browser=false登录，等待用户网页登录，npm0.1.1尚未发布。Issue回复已拟稿但尚未发送，待npm发布读回后执行。当前Claude已正常退出，magpie仍使用已验收candidate目录，正式npm安装切换待发布后处理。下一步使用release-20261024/check-registry.mjs校验新版registry包，不运行旧日期的校验脚本。
+
+
+## 2026-10-24 0.1.1 自动启动实机通过，准备发布
+
+Issue #1 词法导出识别修复已通过原 Claude 3.1623.1.0 实机。冷启动期间另修复前端焦点、开发者工具打开后备流程、Console 输入节点刷新和文件框关闭后的回执焦点处理。最新适配器90项自检通过；整仓151项150通过、0失败、1环境跳过，最后一次输入节点修正后的定向编译测试通过，发布检出整仓复核随后执行。
+
+magpie0.1.1340安装候选目录，默认简体及自动加载；原入口PID71564，唯一脚本提交，SelectedNative、pickerIdentityBits127、Applied，窗口中文已目视核对，辅助窗口全部关闭。证据.handoff/release-20261024/automatic-final-report.json。正常菜单退出后零Claude进程，基线33份配置/会话/历史文件哈希全部不变，profile-after-final.json。此前失败及迟到回执保留于私人报告，不作为最终通过依据。未执行历史任务或Cowork任务，未验证报告者3.1623.0.0完整安装、其他机器或繁体。
+
+当前magpie仍注册candidate/node_modules/magpie-claude-zh；Claude正常退出。最终包需要从发布检出重新冻结，旧77f7及44b7哈希均已过时。npm0.1.1、GitHub Release及Issue回复尚未执行。用户已授权通过后发布和回复。原test分支HEAD89bb330及未提交成果保留。
+
+
+## 2026-10-24 Issue #1 修复候选与实机验收进行中
+
+用户已授权修复、回归、实机验收，通过后发布 npm/GitHub Release 并回复 Issue。原测试分支及 HEAD89bb330 保留；91份现有文件已备份于 .handoff/release-20261024/workspace-before，清单 workspace-before.json。发布检出沿用 .handoff/release-20261019/publish，当前分支 fix/language-store-export-0.1.1，尚未提交发布。
+
+已实现 lib/module-exports.mjs，以固定的 MIT js-tokens 10.0.0 词法分析器识别本模块命名导出，排除 import、re-export、字面量/注释，支持空白及多个 export，缺失/歧义拒绝。第三方源码及许可证位于 lib/vendor。生成器核对唯一 store 定义后调用此解析器；原运行时形状、来源和哈希检查保留。版本升为0.1.1，CLI版本从package.json读取。整仓151项：150通过、0失败、1文件symlink环境跳过；CLI、差异检查、打包及tarball隔离安装通过。
+
+本机原Claude3.1623.1.0运行时已正确生成qf。用户曾关闭Gateway模式，询问后由用户重新启用，旧配置检测随之恢复，无额外探测补丁。通过magpie GUI移除旧npm条目，安装候选tarball的隔离安装目录，唯一注册、默认简体、watching及qf已确认。首次原入口自动启动返回DevToolsNotAvailable；手动通过原菜单打开DevTools后诊断ApplyOnce返回ApplicationNotAcknowledged，但随后前端确实出现随机成功标记，status为zh-Hans、messagesLocale=zh-Hans、catalogRequestsServed=2、restored=false，原窗口中文已目视确认。两次用户实体Esc曾中止桌面工具，收到“继续”后恢复。未把这次迟到回执当成完整自动启动通过。
+
+已通过文件菜单正常退出，零进程后33份原配置/会话/历史文件哈希全部不变。当前正在第二次原入口启动自动验收，原magpie监听host-58tIhU。当前候选包SHA256为77f7dc802beb369ebcce56baca9b5815c4e4ab850bc64e125658db76d5b8d070，768510字节、40文件；详情candidate-package.json。尚未发布或回复Issue。证据及进度在 .handoff/release-20261024/acceptance-progress.json、profile-after-first-run.json、manual-diagnostic。当前安装为该目录candidate/node_modules/magpie-claude-zh；完成后应切回正式npm安装。
+
+## 2026-10-23 Issue #1 方案核查
+
+用户要求核查 Issue 和修复建议。本机 Claude 已为 3.1623.1.0；只读运行当前 runtimeSpec，在 shared-52-CTBp1Kd0.js 上复现错误 storeExport=$n，真实语言 store 局部变量 ey 在本模块导出为 qf。首个 ey as $n 实际处于 import，问题是算法没有区分 import 与 export。Issue 报告的 3.1623.0.0 原文件尚未取得，不能把本机复现称作对其完整二进制的验证。
+
+方案 B 在本机真实资源正确返回 qf，适合作为修正方向；正式实现应识别当前模块命名导出、处理空白与多个导出语句、排除 re-export，并保留缺失/歧义拒绝。方案 A 在本机碰巧成功，但合法 ESM 反例证实它会把普通函数当候选，不能直接采用。方案 C 的接口检查目前已存在；单独重复校验不能修正坏别名，也不能在 Node 生成阶段直接执行真实浏览器模块。不要硬编码 qf 或只手改 spec，后续修复应统一重建全部带哈希产物。
+
+验证：现有 runtime-localization 5项通过；只读真实生成复现、Issue A/B 原样片段、合法 ESM 函数/store 导入反例及 B 的空白/多 export 边界核查通过。尚未修改产品实现、发布版本、评论 Issue 或进行新的 GUI 验收。原分支 test/profile-reuse-real-app-20261018、HEAD89bb330 与其他未提交成果保留，日常应用/profile未写入。证据与可重复脚本：.handoff/issue-1-review-20261023/review.md、result.json、review.mjs。
+
 ## 2026-10-19 对外 README 展示
 
 README新增npm动态版本徽章、Windows/Node/MIT信息、npm包链接、首版v0.1.0/全部版本/问题反馈入口。按npm包名安装为首步，说明默认简体、保持magpie运行及原入口打开；截图放在使用说明后，旧文件夹条目切换说明补入安装步骤。图片与用户文档均改完整GitHub地址，便于跨页面阅读。first-install与magpie常见问题同步包链接、版本查看和旧条目切换说明。
@@ -223,3 +298,5 @@ CLI 独立语言仓库默认 cwd/.catalogs；插件显式传入 LocalAppData 仓
 仓库：https://github.com/polang233/claude-desktop-3p-zh 。本轮归档到本地分支 checkpoint/magpie-profile-handoff-20261017，不推送；最终提交号见 git log 与忽略的 .handoff/checkpoint-20261017.md。勿据此假定远端已包含。进入先 git status；保留已有修改。官方资源、凭据、应用程序、测试 profile 不入 Git，.catalogs/.handoff 被忽略。没有发布 npm。
 
 Node 22+，无运行时 npm 依赖。使用 npm test 和 npm run check。未经用户要求不提交、不推送、不修改日常插件配置。后续优先：修复审计确认问题、补原位异常恢复测试、隔离真实 magpie 宿主全链路验证，再研究商店版原程序可行路径；无结果时明确报告，不自动退回副本。
+
+2026-10-24 README 下载量展示：顶部版本徽章后新增 Shields npm 总下载量徽章，链接 npm 包页；接口 HTTP200/SVG 与远端 README 读回通过。仅 README 发布提交 baa2d54，原测试分支及未提交成果保留。npm 站内 README 随后续包版本同步。

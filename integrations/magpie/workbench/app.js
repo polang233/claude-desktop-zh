@@ -1,6 +1,6 @@
 (async () => {
   const labels = { source: '应用位置', root: '独立副本', profile: '3p 数据', gateway: '网关配置', catalog: '语言资源', caches: '可用缓存', locale: '默认语言' };
-  const names = { check: '检查兼容性', install: '写入语言资源', detect: '检查网关', status: '查看状态', plan: '查看计划', 'import-cache': '导入语言缓存', prepare: '创建独立副本', switch: '切换语言', launch: '启动独立副本', restore: '恢复原始语言文件' };
+  const names = { check: '检查兼容性', install: '写入语言资源', detect: '检查网关', status: '刷新状态', plan: '查看计划', 'import-cache': '导入语言缓存', prepare: '创建测试副本', switch: '切换语言', launch: '启动测试副本', restore: '恢复原始语言' };
   const localeNames = { 'zh-Hans': '简体中文', 'zh-Hant': '繁體中文' };
   const log = document.getElementById('log');
   const selector = document.getElementById('locale-select');
@@ -30,8 +30,8 @@
     }
     document.getElementById('paths').append(list);
     selector.value = state.paths.locale;
-    document.getElementById('mode').textContent = copyMode ? '当前目标：独立测试副本。操作不会安装到日常应用。' : '当前目标：现有应用的语言文件。保留现有配置；受保护的商店安装会拒绝修改。';
-    document.getElementById('guard').textContent = '每次写入和启动都会再次确认。请先关闭目标应用；发现文件版本变化或权限不足时会停止。';
+    document.getElementById('mode').textContent = copyMode ? '当前目标：独立测试副本。' : '当前目标：现有 Claude。';
+    document.getElementById('guard').textContent = '写入和启动前会再次确认；请先关闭目标应用。';
     const issues = state.paths.issues;
     if (issues && Object.keys(issues).length) show({ message: '部分路径未能自动确定，请先检查兼容性或查看状态。', issues });
     function enable(enabled) {

@@ -4,8 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { sha256, localeValue } from '../lib/common.mjs';
-import { discoverPatchTargets } from '../lib/patch.mjs';
-import { plan } from '../lib/install.mjs';
+import { frontendPlan } from '../lib/install.mjs';
 import { localNamedExport } from '../lib/module-exports.mjs';
 
 // Serialized into the generated snippet; keep this function self-contained.
@@ -81,9 +80,8 @@ export async function activateRuntimeCatalog(spec, expectedOrigin = 'app://local
 
 export function runtimeSpec(source, catalogDirectory, locale) {
   localeValue(locale);
-  const prepared = plan(source, catalogDirectory, locale);
-  const runtime = discoverPatchTargets(prepared.application.resources).runtime;
-  if (sha256(Buffer.from(runtime.text)) !== prepared.sourceHashes[runtime.relative]) throw new Error('Language runtime changed during planning.');
+  const prepared = frontendPlan(source, catalogDirectory, locale);
+  const runtime = prepared.application.targets.runtime;
   const stores = [...runtime.text.matchAll(/var ([$\w]+)=[$\w]+\(\(e,t\)=>\(\{messages:\{\},messagesLocale:null,gates:\[\]/g)];
   if (stores.length !== 1) throw new Error('Unsupported language-store export. No snippet generated.');
   const storeExport = localNamedExport(runtime.text, stores[0][1]);

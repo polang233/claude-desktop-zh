@@ -19,12 +19,10 @@ function answers(calls) {
 test('host plugin exposes real tool hooks and a local page opener, not a model provider', async () => {
   assert.deepEqual(Object.keys(pluginModule), ['ClaudeChinesePlugin']);
   const hooks = await ClaudeChinesePlugin({}, { projectDirectory: 'nonexistent-path', autoSync: true });
-  assert(hooks.auth.methods[0].authorize);
-  assert.equal(hooks.auth.authorize, undefined);
+  assert.equal(hooks.auth, undefined);
   assert(hooks.tool.claude_zh_manage.execute);
   assert(hooks.tool.claude_zh_manage.args.properties.action.enum.includes('discover'));
   assert(hooks.tool.claude_zh_workbench.execute);
-  assert.equal(hooks.auth.provider, 'claude-desktop-3p-zh');
   assert.equal(hooks.config, undefined);
 });
 test('actions use discovered paths and still require the exact confirmation', async () => {
