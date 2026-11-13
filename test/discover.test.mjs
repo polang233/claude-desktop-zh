@@ -32,7 +32,7 @@ test('discovers one store install and its gateway without exposing the key', t =
   const profile = path.join(env.LOCALAPPDATA, 'Claude-3p');
   gateway(profile);
   fs.mkdirSync(path.join(env.LOCALAPPDATA, 'Packages', 'Claude_pzs8sxrjxfjjc', 'LocalCache', 'Roaming', 'Claude', 'Cache', 'Cache_Data'), { recursive: true });
-  assert.equal(discoverInstall(env, store).source, path.resolve(source));
+  assert.equal(discoverInstall(env, store, 'win32').source, path.resolve(source));
   const found = discoverProfiles(env);
   assert.equal(found.directory, path.resolve(profile));
   assert.equal(found.provider, 'gateway');
@@ -43,10 +43,10 @@ test('discovers one store install and its gateway without exposing the key', t =
 
 test('ambiguous or missing installations stay unresolved', t => {
   const { env } = home(t);
-  assert.throws(() => discoverInstall(env, () => []), /No readable Claude/);
+  assert.throws(() => discoverInstall(env, () => [], 'win32'), /No readable Claude/);
   app(path.join(env.LOCALAPPDATA, 'Claude'));
   app(path.join(env.LOCALAPPDATA, 'Programs', 'Claude'));
-  assert.throws(() => discoverInstall(env), /More than one/);
+  assert.throws(() => discoverInstall(env, () => [], 'win32'), /More than one/);
   assert.throws(() => discoverProfiles(env), /No 3p Gateway/);
 });
 
@@ -64,11 +64,20 @@ test('deduplicates local install aliases and repeated store candidates', t => {
   const { root, env } = home(t);
   const local = path.join(env.LOCALAPPDATA, 'Claude');
   app(local);
-  assert.equal(discoverInstall(env).source, local);
+  app(path.join(env.LOCALAPPDATA, 'claude'));
+  assert.equal(discoverInstall(env, () => [], 'win32').source, local);
   const store = path.join(root, 'Claude_1.0_arm64__pzs8sxrjxfjjc');
   app(path.join(store, 'app'));
   const candidates = process.platform === 'win32' ? [store, store.toUpperCase(), store] : [store, store];
-  assert.equal(discoverInstall({}, () => candidates).source, path.join(store, 'app'));
+  assert.equal(discoverInstall({}, () => candidates, 'win32').source, path.join(store, 'app'));
+});
+
+test('Linux discovery does not treat LOCALAPPDATA as a Windows install directory', t => {
+  const { env } = home(t);
+  const source = path.join(env.LOCALAPPDATA, 'Claude');
+  app(source);
+  assert.equal(discoverInstall(env, () => [], 'win32').source, source);
+  assert.throws(() => discoverInstall(env, () => [], 'linux'), /No readable Claude/);
 });
 
 test('deduplicates overlapping profile and cache paths on Windows', { skip: process.platform !== 'win32' }, t => {
@@ -101,9 +110,9 @@ test('injected environments never query the host AppX installation or use its ho
   childProcess.execFileSync = () => { calls++; throw new Error('Host access forbidden'); };
   syncBuiltinESMExports();
   try {
-    assert.throws(() => discoverInstall(env), /No readable/);
+    assert.throws(() => discoverInstall(env, () => [], 'win32'), /No readable/);
     assert.deepEqual(discoverCaches(env), []);
-    const report = discover({}, env);
+    const report = discover({}, env, () => [], 'win32');
     assert.equal(report.source, null);
     assert.equal(report.profileDirectory, null);
     assert.deepEqual(report.issues.map(issue => issue.field), ['source', 'profileDirectory']);
@@ -116,13 +125,13 @@ test('partial reports resolve source and profile independently and preserve reco
   const { root, env } = home(t);
   const profile = path.join(env.LOCALAPPDATA, 'Claude-3p');
   gateway(profile);
-  let result = discover({}, env);
+  let result = discover({}, env, () => [], 'win32');
   assert.equal(result.source, null);
   assert.equal(result.profileDirectory, profile);
   assert.deepEqual(result.issues.map(issue => issue.field), ['source']);
   fs.rmSync(profile, { recursive: true });
   const source = path.join(env.LOCALAPPDATA, 'Claude'); app(source);
-  result = discover({}, env);
+  result = discover({}, env, () => [], 'win32');
   assert.equal(result.source, source);
   assert.equal(result.gatewayProfile, null);
   assert.deepEqual(result.issues.map(issue => issue.field), ['profileDirectory']);
@@ -139,7 +148,7 @@ test('explicit discovery paths override ambiguous globals and resolve matching g
   app(path.join(env.LOCALAPPDATA, 'Programs', 'Claude'));
   const profile = path.join(root, 'selected-profile'); gateway(profile);
   const options = { source: path.join(root, 'selected-app'), profileDirectory: profile, managedRoot: path.join(root, 'copy'), catalogDirectory: path.join(root, 'catalogs'), cache: path.join(root, 'cache') };
-  const result = discover(options, env);
+  const result = discover(options, env, () => [], 'win32');
   assert.equal(result.source, options.source);
   assert.equal(result.profileDirectory, profile);
   assert.equal(result.gatewayProfile, path.join(profile, 'configLibrary', '00000000-0000-4000-8000-3369707a6801.json'));
@@ -148,11 +157,11 @@ test('explicit discovery paths override ambiguous globals and resolve matching g
   assert.deepEqual(result.caches, [options.cache]);
   assert.deepEqual(result.issues, []);
   fs.rmSync(profile, { recursive: true });
-  const missing = discover(options, env);
+  const missing = discover(options, env, () => [], 'win32');
   assert.equal(missing.profileDirectory, profile);
   assert.equal(missing.gatewayProfile, null);
   assert.equal(missing.issues[0].field, 'profileDirectory');
-  const override = discover({ ...options, gatewayProfile: path.join(root, 'explicit.json') }, env);
+  const override = discover({ ...options, gatewayProfile: path.join(root, 'explicit.json') }, env, () => [], 'win32');
   assert.equal(override.gatewayProfile, path.join(root, 'explicit.json'));
   assert.deepEqual(override.issues, []);
 });
