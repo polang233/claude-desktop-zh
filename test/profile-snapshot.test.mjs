@@ -13,9 +13,8 @@ function samePath(left, right) {
   return normalize(left) === normalize(right);
 }
 function fixture(t) {
-  // Canonicalize the platform temp parent so a machine's /tmp alias is not
-  // mistaken for a link introduced inside a profile fixture.
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), '3p-profile-snapshot-'));
+  // 使用系统原生路径，避免 Windows 短文件名和 /tmp 别名干扰身份模拟。
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), '3p-profile-snapshot-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source'), destination = path.join(root, 'snapshot');
   fs.mkdirSync(source);
