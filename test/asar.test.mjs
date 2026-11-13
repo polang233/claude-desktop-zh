@@ -71,7 +71,7 @@ test('reads packed Claude frontend entries through the ASAR file table', () => {
 test('discovers and inspects a packed Windows installation without resource writes', () => {
   const { root, app } = fixture();
   const env = { LOCALAPPDATA: path.join(root, 'local'), APPDATA: path.join(root, 'roaming'), USERPROFILE: root };
-  const found = discoverInstall(env, () => [path.join(root, 'package')]);
+  const found = discoverInstall(env, () => [path.join(root, 'package')], 'win32');
   assert.equal(found.source, app);
   const report = inspect(app);
   assert.equal(report.frontend, 'asar');

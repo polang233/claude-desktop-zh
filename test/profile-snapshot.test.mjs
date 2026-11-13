@@ -8,6 +8,10 @@ import childProcess from 'node:child_process';
 import { inventoryProfile, copySnapshot, inspectProfile, compareSnapshot } from '../lib/profile-snapshot.mjs';
 
 const PRIVATE = 'fixture-private-title-body-session-credential';
+function samePath(left, right) {
+  const normalize = value => process.platform === 'win32' ? path.resolve(String(value)).toLowerCase() : path.resolve(String(value));
+  return normalize(left) === normalize(right);
+}
 function fixture(t) {
   // Canonicalize the platform temp parent so a machine's /tmp alias is not
   // mistaken for a link introduced inside a profile fixture.
@@ -228,7 +232,7 @@ test('ancestor file identities reject drive/volume aliases even when canonical s
   // Simulate an OS alias (SUBST/volume/short-name) without creating or changing
   // a real drive. Both the alias path and its canonical path have source's ID.
   t.mock.method(fs, 'lstatSync', (input, settings) => {
-    if (String(input) === aliasParent && settings?.bigint) return lstat(source, settings);
+    if (samePath(input, aliasParent) && settings?.bigint) return lstat(source, settings);
     return lstat(input, settings);
   });
   const target = path.join(aliasParent, 'snapshot');
@@ -241,10 +245,10 @@ test('canonical aliases are checked and missing reliable identities fail closed'
   put('a.json', '{}');
   const aliasParent = path.join(root, 'alias-parent'); fs.mkdirSync(aliasParent);
   const lstat = fs.lstatSync, realpath = fs.realpathSync.native;
-  t.mock.method(fs.realpathSync, 'native', input => String(input) === aliasParent ? source : realpath(input));
+  t.mock.method(fs.realpathSync, 'native', input => samePath(input, aliasParent) ? source : realpath(input));
   assert.throws(() => copySnapshot(source, path.join(aliasParent, 'snapshot'), { assertQuiescent() {} }), code('PROFILE_IDENTITY_UNVERIFIED'));
   t.mock.method(fs, 'lstatSync', (input, settings) => {
-    if (String(input) === source && settings?.bigint) {
+    if (samePath(input, source) && settings?.bigint) {
       return { dev: 1n, ino: 0n, isDirectory: () => true, isSymbolicLink: () => false };
     }
     return lstat(input, settings);
@@ -260,7 +264,7 @@ test('copy rejects a changed directory identity after the initial scan', t => {
   let changed = false, calls = 0;
   t.mock.method(fs, 'lstatSync', (input, settings) => {
     const stat = lstat(input, settings);
-    if (String(input) === source && settings?.bigint && changed) {
+    if (samePath(input, source) && settings?.bigint && changed) {
       return { dev: stat.dev, ino: stat.ino + 1n, isDirectory: () => true, isSymbolicLink: () => false };
     }
     return stat;

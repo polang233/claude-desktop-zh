@@ -13,7 +13,7 @@
     "claude-3p-zh": "bin/claude-3p-zh.mjs"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --import ./test/setup.mjs --test test/*.test.mjs",
     "check": "node bin/claude-3p-zh.mjs help",
     "prepack": "node scripts/check-package.mjs"
   },
