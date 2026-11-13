@@ -81,6 +81,17 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     if (stopFile) fs.writeFileSync(stopFile, 'Plugin requested normal watcher stop.\n');
     publish({ ...current, state: 'stopping', automaticNextLaunch: false });
   }
+  async function stopped() {
+    stop();
+    await starting;
+    if (!child || child.exitCode != null) return;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { child.off('exit', exited); reject(new Error('Watcher has not stopped yet. Try again shortly.')); }, 10_000);
+      function exited() { clearTimeout(timer); resolve(); }
+      child.once('exit', exited);
+      if (child.exitCode != null) exited();
+    });
+  }
   async function start() {
     if (starting) return starting;
     starting = (async () => {
@@ -150,5 +161,5 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     })();
     return starting;
   }
-  return { start, stop, state: () => ({ ...current }) };
+  return { start, stop, stopped, state: () => ({ ...current }) };
 }

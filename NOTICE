@@ -1,6 +1,15 @@
 This project is not affiliated with Anthropic, CC Switch, or magpie.
 
-The MIT license covers this project's code, documentation and original mascot artwork.
+The MIT license covers this project's code and documentation.
+The current mascot artwork (assets/logo.png, integrations/magpie/page/icon.png
+and docs/images/claude-mascot.png) is distributed under CC BY-NC-SA 4.0.
+It was generated and adapted from a user-supplied reference of CrossPet's
+Claude character artwork (lokicorvus / CrossPet contributors):
+https://github.com/lokicorvus/crosspet/blob/main/characters/LICENSE.md
+Changes include a magnifying-glass pose and a large Chinese translation bubble.
+The reference credits the community Claude-girl design.
+Artwork license: https://creativecommons.org/licenses/by-nc-sa/4.0/
+This artwork license is separate from the code's MIT license.
 Claude Desktop and official translation resources belong to their respective
 rights holders. Runtime catalog imports are stored locally in .catalogs and
 are not included in the source repository or the npm file list. Do not treat

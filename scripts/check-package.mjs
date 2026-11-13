@@ -26,4 +26,6 @@ for (const file of [pkg.main, pkg.magpie.page.file, pkg.magpie.page.icon,
   assert(fs.statSync(path.join(root, file)).isFile(), 'Missing package file: ' + file);
 }
 assert(!pkg.dependencies && !pkg.optionalDependencies, 'Review runtime dependencies before publishing.');
+const ignoreFile = path.join(root, 'integrations/magpie/page/.npmignore');
+if (fs.existsSync(ignoreFile)) assert(fs.readFileSync(ignoreFile, 'utf8').includes('.runtime-session.js'), 'Exclude the local UI capability from npm packages.');
 console.error(`${pkg.name}@${pkg.version}: plugin entry, page and embedded icon verified.`);

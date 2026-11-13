@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { pageFixture } from './page-fixture.mjs';
 import { fileURLToPath } from 'node:url';
 import { createWorkbench, closeWorkbenches } from '../integrations/magpie/workbench.mjs';
 import { ClaudeChinesePlugin } from '../integrations/magpie/server.mjs';
@@ -83,6 +84,44 @@ test('malicious Host, Origin and cross-site fetches are refused, even with a val
     assert.equal((await fetch(base + '/api/run', { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body })).status, 401);
     assert.equal((await fetch(base + '/api/run', { method: 'POST', headers: { ...headers, origin: base, 'content-type': 'text/plain' }, body })).status, 415);
   } finally { await workbench.close(); }
+});
+
+test('embedded UI needs its bearer for reads and settings, and accepts only validated preferences', async t => {
+  let saved = { locale: 'zh-Hans', runtimeAutoLoad: true };
+  let saves = 0;
+  const workbench = createWorkbench(options, fakeRun, undefined, { allowSandboxFrames: true,
+    get: () => saved, save: async value => { saves++; saved = value; return value; } });
+  t.after(() => workbench.close());
+  const address = await workbench.listen(), base = `http://127.0.0.1:${address.port}`;
+  const token = new URLSearchParams(new URL(workbench.url()).hash.slice(1)).get('token');
+  const headers = { origin: 'null', authorization: 'Bearer ' + token, 'content-type': 'application/json' };
+  assert.equal((await fetch(base + '/api/state', { headers: { origin: 'null' } })).status, 401);
+  assert.equal((await fetch(base + '/api/preferences', { method: 'POST', headers: { origin: 'null', 'content-type': 'application/json' }, body: JSON.stringify(saved) })).status, 401);
+  const state = await fetch(base + '/api/state', { headers });
+  assert.equal(state.status, 200); assert.equal(state.headers.get('access-control-allow-origin'), 'null');
+  assert.equal((await fetch(base + '/api/state', { headers: { ...headers, origin: 'https://unrelated.example' } })).status, 403);
+  assert.equal((await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify({ ...saved, command: 'untrusted' }) })).status, 400);
+  assert.equal(saves, 0);
+  const changed = { locale: 'zh-Hant', runtimeAutoLoad: false };
+  const response = await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify(changed) });
+  assert.equal(response.status, 200); assert.deepEqual(await response.json(), changed);
+  assert.deepEqual((await (await fetch(base + '/api/state', { headers })).json()).preferences, changed);
+  assert.equal(saves, 1);
+});
+
+test('a retired host cannot read state, save preferences, or run a maintenance action', async t => {
+  let current = true, operations = 0;
+  const workbench = createWorkbench(options, () => { operations++; return Promise.resolve(discovered); }, undefined,
+    { current: () => current, save: async () => { operations++; } });
+  t.after(() => workbench.close());
+  await workbench.listen();
+  const url = new URL(workbench.url()), headers = { authorization: 'Bearer ' + new URLSearchParams(url.hash.slice(1)).get('token'), origin: url.origin, 'content-type': 'application/json' };
+  current = false;
+  for (const [endpoint, body] of [['/api/state', null], ['/api/preferences', { locale: 'zh-Hans', runtimeAutoLoad: true }], ['/api/run', { action: 'status', locale: 'zh-Hans' }]]) {
+    const response = await fetch(url.origin + endpoint, { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined });
+    assert.equal(response.status, 409);
+  }
+  assert.equal(operations, 0);
 });
 
 test('actions pass the selected locale to the CLI and retain exact confirmation', async () => {
@@ -176,7 +215,7 @@ test('concurrent opens share one server and cleanup allows reopen', async () => 
     assert.equal(second.url, first.url);
     const page = await fetch(first.url);
     assert.equal(page.status, 200);
-    assert.match(await page.text(), /locale-select/);
+    assert.match(await page.text(), /id="locale"/);
     await closeWorkbenches();
     const reopened = JSON.parse(await hooks.tool.claude_zh_workbench.execute({}));
     assert.notEqual(new URL(reopened.url).hash, new URL(first.url).hash);
@@ -198,30 +237,31 @@ test('listen and close are idempotent, including close while opening', async () 
 test('page uses fragment authentication and selected locale without editing JSON', async () => {
   const elements = new Map();
   const element = (properties = {}) => ({ textContent: '', disabled: true, children: [], append(...children) { this.children.push(...children); }, ...properties });
-  for (const id of ['log', 'locale-select', 'paths', 'mode', 'guard']) elements.set(id, element());
+  const ui = pageFixture();
+  for (const [id, value] of ui.elements) elements.set(id, value);
   const button = element({ dataset: { action: 'switch', write: 'true' }, addEventListener(_event, callback) { this.click = callback; } });
   const token = 'a'.repeat(64);
   const calls = [];
   let confirmed = false, scrubbed = false;
   const context = {
-    URLSearchParams, location: { hash: '#token=' + token, pathname: '/' },
+    HTMLElement: ui.HTMLElement, URLSearchParams, location: { hash: '#token=' + token, pathname: '/' },
     history: { replaceState(_state, _title, url) { assert.equal(url, '/'); scrubbed = true; } },
-    document: { getElementById: id => elements.get(id), createElement: () => element(), querySelectorAll: () => [button] },
+    document: { ...ui.document, querySelectorAll: selector => selector === 'button[data-action]' ? [button] : ui.document.querySelectorAll(selector) },
     window: { confirm: () => confirmed },
     setTimeout: callback => { callback(); },
     fetch: async (url, init) => {
       assert(scrubbed);
       calls.push({ url, init });
       assert.equal(init.headers.authorization, 'Bearer ' + token);
-      return { ok: true, json: async () => url === '/api/state' ? { paths: { locale: 'zh-Hant', mode: 'copy', root: 'managed', allowWrites: true } } : url === '/api/run' ? { id: 'job' } : { state: 'done', result: { ok: true } } };
+      return { ok: true, json: async () => url === '/api/state' ? { paths: { locale: 'zh-Hant', mode: 'copy', root: 'managed', allowWrites: true }, preferences: { locale: 'zh-Hant', runtimeAutoLoad: true }, canSave: true } : url === '/api/run' ? { id: 'job' } : { state: 'done', result: { ok: true } } };
     }
   };
-  await vm.runInNewContext(fs.readFileSync(new URL('../integrations/magpie/workbench/app.js', import.meta.url), 'utf8'), context);
-  assert.equal(elements.get('locale-select').value, 'zh-Hant');
+  await vm.runInNewContext(fs.readFileSync(new URL('../integrations/magpie/page/app.js', import.meta.url), 'utf8'), context);
+  assert.equal(elements.get('locale').value, 'zh-Hant');
   await button.click();
   assert.equal(calls.length, 1, 'cancel must not submit a write');
   confirmed = true;
-  elements.get('locale-select').value = 'zh-Hans';
+  elements.get('locale').value = 'zh-Hans';
   await button.click();
   assert.deepEqual(JSON.parse(calls.find(call => call.url === '/api/run').init.body), { action: 'switch', confirm: 'switch', locale: 'zh-Hans' });
   assert(!calls.some(call => call.url === '/session'));

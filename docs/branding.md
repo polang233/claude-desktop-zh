@@ -1,15 +1,13 @@
-# Logo
+# Logo 与素材许可
 
-项目名：**claude-desktop-zh**。npm 包名：**magpie-claude-zh**。
+默认吉祥物为橘色长发的 Q 版 Claude 娘，手持放大镜与书，搭配大号“译”字气泡。
 
-默认图标使用橘发翻译员与“译”字气泡。三款均保留透明背景原图，插件使用 256 × 256 PNG；图标以 data URI 写入包元数据，可直接显示在 magpie 卡片中。
+![Claude 中文吉祥物](images/claude-mascot.png)
 
-| 译字气泡 · 默认 | 贝雷帽 · 中 / A | 眼镜与翻译书 |
-| --- | --- | --- |
-| ![译字气泡](images/mascot-speech.png) | ![贝雷帽与翻译气泡](images/mascot-beret.png) | ![眼镜与翻译书](images/mascot-book.png) |
+原图为透明 PNG；插件图标为256×256，存于 assets/logo.png 和 integrations/magpie/page/icon.png，包元数据内嵌同一图标。
 
-原图通过内置 Image Generation 生成。以下为对应提示词摘要；完整提示词见 [logo-prompts.json](logo-prompts.json)。
+图稿由内置图像生成工具参考用户提供的 CrossPet 角色截图生成并改编，加入放大镜姿态和大号翻译字样。参考素材署名 CrossPet（lokicorvus / CrossPet contributors），角色设定来源为社区流行的 Claude 娘形象。
 
-1. Claude 橘色短发卡通娘，星芒发饰，手持“译”字气泡，旁边有“A”，奶油色服装和少量鼠尾草绿，方形透明图标。
-2. 橘色双髻卡通娘，贝雷帽与星芒图案，胸前“中 / A”翻译气泡，箭头连接，方形透明图标。
-3. 杏橘色短发卡通娘，圆框眼镜与星芒发夹，手持写有“A / 中”的翻译书，方形透明图标。
+- [参考素材许可与来源](https://github.com/lokicorvus/crosspet/blob/main/characters/LICENSE.md)
+- 当前吉祥物素材采用 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)，使用时需署名、限非商业用途，并以相同许可共享改编。
+- 项目代码和文档采用 MIT 许可。

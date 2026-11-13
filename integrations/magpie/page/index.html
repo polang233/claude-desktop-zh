@@ -1,22 +1,16 @@
 <!doctype html>
 <html lang="zh-Hans">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude 中文</title>
-<link rel="icon" href="icon.png">
-<link rel="stylesheet" href="style.css">
-<script src="_magpie/bridge.js"></script>
-<script src="app.js?v=settings-6" defer></script>
-</head>
-<body>
-<main>
-<div class="plugin-heading"><img src="icon.png" width="64" height="64" alt=""><div><h1>Claude 中文</h1><span>claude-desktop-zh</span></div></div>
-<p class="summary">为第三方模式加载官方中文，保留原有设置和会话。</p>
-<label class="field" for="locale"><span>语言</span><select id="locale"><option value="zh-Hans">简体中文</option><option value="zh-Hant">繁體中文</option></select></label>
-<label class="check"><input id="runtime-auto" type="checkbox" checked>启动时加载中文</label>
-<div class="actions"><button id="save" type="button">保存</button><p id="status" role="status" aria-live="polite"></p></div>
-<p class="note">保存后下次打开 Claude 生效。使用期间保持 magpie 运行。</p>
-</main>
-</body>
-</html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Claude 中文</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css"><script src="app.js?v=simple-switch-1" defer></script></head>
+<body><main class="workspace">
+<header class="identity"><img src="icon.png" width="144" height="144" alt="" fetchpriority="high"><h1>Claude 中文</h1></header>
+<div class="content">
+<div class="tabs" role="tablist" aria-label="插件功能"><button id="settings-tab" type="button" role="tab" aria-selected="true" tabindex="0">语言设置</button><button id="maintenance-tab" type="button" role="tab" aria-selected="false" tabindex="-1">资源维护</button></div>
+<section id="settings-panel" role="tabpanel" aria-labelledby="settings-tab"><div class="panel-body">
+<p class="description">在 Claude 的第三方 Gateway 模式中使用官方中文界面，保留原设置和会话。需保持喜鹊运行；更改在下次启动 Claude 时生效。停用不改变当前窗口的语言。</p>
+<form id="preferences-form"><label class="field" for="locale"><span>语言</span><select id="locale" disabled><option value="zh-Hans">简体中文</option><option value="zh-Hant">繁體中文</option></select></label>
+<div class="toggle-row"><label for="runtime-auto">启动时自动中文</label><div class="switch-control"><span id="auto-state">正在连接</span><input id="runtime-auto" type="checkbox" role="switch" aria-label="启动时自动中文" checked disabled></div></div>
+<p id="status" role="status" aria-live="polite">正在连接插件…</p></form>
+<details class="usage-note"><summary>启动与退出说明</summary><p>通过 Claude 的「文件 → 退出」正常退出。准备完成后，从原入口打开。加载时会短暂出现调试窗口和文件选择框，完成后自动收起。</p></details></div></section>
+<section id="maintenance-panel" role="tabpanel" aria-labelledby="maintenance-tab" hidden="until-found"><div class="panel-body"><h2>语言资源与应用状态</h2><p id="mode" class="muted">正在读取应用信息…</p><div class="actions"><button type="button" data-action="status" disabled>刷新状态</button><button type="button" data-action="check" data-mode="original" disabled>检查兼容性</button><button type="button" data-action="import-cache" data-write="true" disabled>导入语言缓存</button></div>
+<details class="paths"><summary>查看应用与资源位置</summary><div id="paths"></div></details><details class="advanced"><summary>高级操作</summary><p class="muted">Claude 4.x 使用运行时加载。写入资源仅适用于旧版未打包目录。</p><div class="actions"><button type="button" data-action="install" data-mode="original" data-write="true" disabled>写入语言资源</button><button type="button" data-action="switch" data-write="true" disabled>切换旧版资源语言</button><button type="button" data-action="restore" data-write="true" disabled>恢复旧版资源</button><button type="button" data-action="plan" disabled>查看计划</button><button type="button" data-action="detect" disabled>检查网关</button><button type="button" data-action="prepare" data-mode="copy" data-write="true" disabled>创建测试副本</button><button type="button" data-action="launch" data-mode="copy" disabled>启动测试副本</button></div><p id="guard" class="muted">写入或启动前会再次确认，请先正常退出目标应用。</p></details><div class="result"><h3>操作结果</h3><pre id="log" role="status" aria-live="polite">还没有操作。</pre></div></div></section>
+</div></main></body></html>

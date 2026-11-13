@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ACTIONS, WRITES, createController } from './controller.mjs';
+import { validatePreferences } from './preferences.mjs';
 
 const ASSETS = new Map([
-  ['/', [fileURLToPath(new URL('./workbench/index.html', import.meta.url)), 'text/html; charset=utf-8']],
-  ['/app.js', [fileURLToPath(new URL('./workbench/app.js', import.meta.url)), 'text/javascript; charset=utf-8']],
-  ['/style.css', [fileURLToPath(new URL('./workbench/style.css', import.meta.url)), 'text/css; charset=utf-8']]
+  ['/', [fileURLToPath(new URL('./page/index.html', import.meta.url)), 'text/html; charset=utf-8']],
+  ['/app.js', [fileURLToPath(new URL('./page/app.js', import.meta.url)), 'text/javascript; charset=utf-8']],
+  ['/style.css', [fileURLToPath(new URL('./page/style.css', import.meta.url)), 'text/css; charset=utf-8']],
+  ['/icon.png', [fileURLToPath(new URL('./page/icon.png', import.meta.url)), 'image/png']]
 ]);
 const LOCALES = ['zh-Hans', 'zh-Hant'];
 const CONFIRMED_ACTIONS = new Set([...WRITES, 'launch']);
@@ -19,12 +21,12 @@ const SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
   'x-content-type-options': 'nosniff',
   'cross-origin-resource-policy': 'same-origin',
-  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 };
 
 // The plugin and page share the controller's operation lock. The standalone
 // factory retains its process injection for isolated tests.
-export function createWorkbench(options = {}, runProcess, sharedController) {
+export function createWorkbench(options = {}, runProcess, sharedController, settings = {}) {
   const controller = sharedController || createController(options, runProcess);
   const token = crypto.randomBytes(32).toString('hex');
   const jobs = new Map();
@@ -33,6 +35,7 @@ export function createWorkbench(options = {}, runProcess, sharedController) {
   function touch() {
     clearTimeout(idleTimer);
     if (closed) return;
+    if (settings.keepAlive) return;
     idleTimer = setTimeout(() => {
       if (activeJob) touch();
       else void close();
@@ -55,6 +58,10 @@ export function createWorkbench(options = {}, runProcess, sharedController) {
     const hostCount = request.rawHeaders.filter((_, index) => index % 2 === 0 && request.rawHeaders[index].toLowerCase() === 'host').length;
     if (hostCount !== 1 || request.headers.host !== host) return false;
     const origin = request.headers.origin;
+    if (settings.allowSandboxFrames && request.method === 'GET' && ASSETS.has(request.url.split('?')[0])) return true;
+    // A magpie sandbox frame has an opaque origin. This opt-in service still
+    // requires its unguessable bearer for every API request, including reads.
+    if (settings.allowSandboxFrames && origin === 'null' && request.url.startsWith('/api/')) return true;
     if (origin !== undefined && origin !== `http://${host}`) return false;
     if (request.headers['sec-fetch-site'] === 'cross-site') return false;
     // Normal browser GETs do not send Origin. Mutations require it as well as
@@ -66,13 +73,35 @@ export function createWorkbench(options = {}, runProcess, sharedController) {
     if (closed) return send(response, 503, { error: 'Workbench is closing. Reopen it from the plugin.' });
     if (!request.url.startsWith('/') || request.url.startsWith('//')) return send(response, 400, { error: 'Invalid request target.' });
     const target = new URL(request.url, 'http://127.0.0.1');
+    if (settings.allowSandboxFrames && request.headers.origin === 'null' && target.pathname.startsWith('/api/')) {
+      response.setHeader('access-control-allow-origin', 'null');
+      response.setHeader('vary', 'Origin');
+      if (request.method === 'OPTIONS') {
+        response.setHeader('access-control-allow-methods', 'GET, POST');
+        response.setHeader('access-control-allow-headers', 'authorization, content-type');
+        response.writeHead(204); response.end(); return;
+      }
+    }
     const asset = ASSETS.get(target.pathname);
-    if (request.method === 'GET' && asset) return sendFile(response, ...asset);
+    if (request.method === 'GET' && asset) return sendFile(response, ...asset, settings.allowSandboxFrames);
     // There is deliberately no HTTP endpoint that mints or reveals a token.
     if (!target.pathname.startsWith('/api/')) return send(response, 404, { error: 'Not found.' });
     if (!requireSession(request, response)) return;
+    if (settings.current && !settings.current()) return send(response, 409, { error: 'Plugin configuration changed. Reopen the page.' });
     if (request.method === 'GET' && target.pathname === '/api/state') {
-      return send(response, 200, { paths: await controller.paths(), sync: controller.state(), jobs: [...jobs.values()] });
+      return send(response, 200, { paths: await controller.paths(), sync: controller.state(), jobs: [...jobs.values()],
+        preferences: settings.get?.() ?? { locale: options.locale ?? 'zh-Hans', runtimeAutoLoad: options.runtimeAutoLoad !== false },
+        canSave: typeof settings.save === 'function' });
+    }
+    if (request.method === 'POST' && target.pathname === '/api/preferences') {
+      if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
+      let value;
+      try { value = validatePreferences(await readJSON(request)); }
+      catch { return send(response, 400, { error: 'Invalid language preferences.' }); }
+      if (!settings.save) return send(response, 409, { error: 'Open this page from the active magpie plugin to save settings.' });
+      if (activeJob || controller.state().busy) return send(response, 409, { error: 'Another plugin operation is running.' });
+      activeJob = Promise.resolve().then(() => settings.save(value));
+      try { return send(response, 200, await activeJob); } finally { activeJob = undefined; }
     }
     if (request.method === 'POST' && target.pathname === '/api/run') {
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
@@ -177,9 +206,15 @@ function send(response, status, body) {
   response.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(payload) });
   response.end(payload);
 }
-function sendFile(response, file, type) {
+function sendFile(response, file, type, allowFrame = false) {
   const payload = fs.readFileSync(file);
-  response.writeHead(200, { ...SECURITY_HEADERS, 'content-type': type, 'content-length': payload.length });
+  const headers = { ...SECURITY_HEADERS, 'content-type': type, 'content-length': payload.length };
+  if (allowFrame) {
+    headers['content-security-policy'] = headers['content-security-policy'].replace("frame-ancestors 'none'", "frame-ancestors http://wails.localhost wails://wails.localhost http://127.0.0.1:* http://localhost:*");
+    // These are public static assets only; API responses retain same-origin.
+    headers['cross-origin-resource-policy'] = 'cross-origin';
+  }
+  response.writeHead(200, headers);
   response.end(payload);
 }
 function readJSON(request) {

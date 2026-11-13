@@ -98,6 +98,22 @@ test('an options change during catalog preparation prevents an obsolete watcher'
   assert.equal(spawned, false); assert.equal(runtime.state().state, 'owner-changed');
 });
 
+test('settings restart waits for the old watcher to exit through its stop file', async t => {
+  const f = fixture(t), child = fakeChild();
+  const runtime = createRuntimeHost({ directory: f.root }, {}, {
+    runtimeConfiguration: () => ({ cwd: project }),
+    prepareRuntime: async output => ({ automationManifest: output + '.json', profileDirectory: path.join(f.root, 'profile') })
+  }, { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => child });
+  await runtime.start();
+  const waiting = runtime.stopped();
+  await new Promise(resolve => setImmediate(resolve));
+  const run = fs.readdirSync(path.join(f.root, 'runtime'))[0];
+  assert(fs.existsSync(path.join(f.root, 'runtime', run, 'stop')));
+  child.emit('exit', 0);
+  await waiting;
+  assert.equal(runtime.state().state, 'stopped');
+});
+
 test('disabled or unsupported modes never prepare catalogs or start a process', async () => {
   for (const options of [{ mode: 'copy' }, { runtimeAutoLoad: false }, { allowWrites: false }]) {
     const runtime = createRuntimeHost({}, options, { runtimeConfiguration() { throw new Error('Unexpected preparation'); } }, { platform: 'win32' });

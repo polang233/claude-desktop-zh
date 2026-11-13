@@ -18,6 +18,7 @@ test('published tarball installs and loads by package name with its runtime and 
   });
   const [packed] = JSON.parse(npm('pack', '--json', '--ignore-scripts', '--pack-destination', root));
   const files = packed.files.map(file => file.path);
+  assert.equal(files.some(file => file.includes('.runtime-session')), false, 'Never publish local UI session capabilities');
   for (const required of ['integrations/magpie/server.mjs', 'integrations/magpie/page/index.html',
     'integrations/magpie/page/icon.png', 'integrations/windows-runtime/RuntimeConsoleBridge.cs',
     'scripts/test-runtime-autoload.ps1', 'scripts/build-runtime-localization.mjs', 'assets/logo.png',
