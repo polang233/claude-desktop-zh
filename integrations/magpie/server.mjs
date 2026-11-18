@@ -8,6 +8,8 @@ import { atomicWrite, assertPlainDirectory, sha256 } from '../../lib/common.mjs'
 import { registrySnapshot } from './runtime-host.mjs';
 import { preferenceStore } from './preferences.mjs';
 
+const UNIX_EPOCH_TICKS = 621355968000000000n;
+
 // Only plugin factories may be exported here: the host invokes every export.
 export const ClaudeChinesePlugin = async (_input, options = {}) => {
   const store = preferenceStore(options, options.stateDirectory);
@@ -18,7 +20,9 @@ export const ClaudeChinesePlugin = async (_input, options = {}) => {
     const value = currentController[key]; return typeof value === 'function' ? value.bind(currentController) : value;
   } });
   const owner = () => registrySnapshot(_input.directory, options);
-  const makeRuntime = () => createRuntimeHost(_input, { ...options, ...preferences }, controller, { registrySnapshot: owner });
+  const makeRuntime = skipClaudeStartedThrough => createRuntimeHost(_input, { ...options, ...preferences }, controller, {
+    registrySnapshot: owner, skipClaudeStartedThrough
+  });
   let runtime = makeRuntime();
   void runtime.start();
   let workbench, opening;
@@ -35,14 +39,17 @@ export const ClaudeChinesePlugin = async (_input, options = {}) => {
               catch { return false; }
             } : undefined,
             get: () => ({ ...preferences }),
+            runtime: () => runtime.state(),
             save: hosted ? async value => {
               const snapshot = owner();
               await runtime.stopped();
               if (sha256(fs.readFileSync(snapshot.file)) !== snapshot.hash) throw new Error('Plugin options changed. Reopen the page.');
+              // Include the whole capture millisecond when comparing Windows start ticks.
+              const skipClaudeStartedThrough = (UNIX_EPOCH_TICKS + BigInt(Date.now()) * 10000n + 9999n).toString();
               try { preferences = store.write(value); }
-              catch (error) { runtime = makeRuntime(); void runtime.start(); throw error; }
+              catch (error) { runtime = makeRuntime(skipClaudeStartedThrough); void runtime.start(); throw error; }
               currentController = createController({ ...options, ...preferences });
-              runtime = makeRuntime();
+              runtime = makeRuntime(skipClaudeStartedThrough);
               void runtime.start();
               return { ...preferences };
             } : undefined

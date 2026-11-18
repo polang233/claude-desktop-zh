@@ -6,7 +6,7 @@ import { checkOriginal, planOriginal, applyOriginal, statusOriginal, switchOrigi
 import { fetchCatalog, saveCatalog } from '../lib/catalogs.mjs';
 import { importCache } from '../lib/cache.mjs';
 import { readJSON, localeValue } from '../lib/common.mjs';
-import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLayout } from '../lib/discover.mjs';
+import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLayout, runtimeSourceBinding } from '../lib/discover.mjs';
 import { buildRuntimeLocalization } from '../scripts/build-runtime-localization.mjs';
 import { runtimeSetupStatus, setupRuntime, restoreRuntimeSetup, windowsSetupGuard } from '../lib/runtime-setup.mjs';
 
@@ -27,6 +27,7 @@ inspect       [--source <Claude app directory or Claude.app>]
 detect-3p     [--profile-dir <Claude-3p directory>]
 plan          [--source <app>] [--locale zh-Hans|zh-Hant] [--catalog-dir <dir>]
 runtime-export [--source <app>] [--locale zh-Hans|zh-Hant] --output <new JS file>
+runtime-source [--source <app>]
 runtime-setup-status [--profile-dir <Claude-3p directory>]
 runtime-setup [--profile-dir <Claude-3p directory>] [--state-dir <backup directory>]
 runtime-setup-restore --file <setup journal> [--profile-dir <Claude-3p directory>]
@@ -111,6 +112,7 @@ async function main() {
     case 'detect-3p': result = detect3p(options['profile-dir'] ?? profile().directory); break;
     case 'plan': result = plan(source(), directory(), locale()).report; break;
     case 'runtime-export': result = buildRuntimeLocalization(source(), directory(), locale(), required(options, 'output')); break;
+    case 'runtime-source': result = runtimeSourceBinding(source()); break;
     case 'runtime-setup-status': result = runtimeSetupStatus(profile().directory); break;
     case 'runtime-setup': {
       const p = profile().directory;

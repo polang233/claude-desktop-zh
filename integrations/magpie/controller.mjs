@@ -114,7 +114,8 @@ export function createController(options = {}, runProcess = runCLI) {
   return {
     execute, sync,
     runtimeConfiguration: configuration,
-    async prepareRuntime(output) {
+    runtimeSource: () => runProcess(configuration(), ['runtime-source', ...sourceArgs()]),
+    async prepareRuntime(output, sourceDirectory = options.sourceDirectory) {
       if (mode !== 'original' || options.allowWrites === false) throw new Error('Runtime localization is disabled.');
       if (busy) throw new Error('Another plugin operation is running.');
       busy = true;
@@ -124,7 +125,7 @@ export function createController(options = {}, runProcess = runCLI) {
         const config = configuration();
         const localCatalog = path.join(config.cwd, '.catalogs');
         const selectedCatalog = options.catalogDirectory ?? (fs.existsSync(localCatalog) ? localCatalog : catalog);
-        const exportRuntime = () => runProcess(config, ['runtime-export', ...sourceArgs(), '--locale', locale(), '--catalog-dir', selectedCatalog, '--output', output]);
+        const exportRuntime = () => runProcess(config, ['runtime-export', ...optional('--source', sourceDirectory), '--locale', locale(), '--catalog-dir', selectedCatalog, '--output', output]);
         try { return { ...await exportRuntime(), profileDirectory: detected.directory }; }
         catch (error) {
           if (!/^(?:Error: )?Missing compatible zh-Han[st] base\/dynamic catalogs\./.test(error.message)) throw error;

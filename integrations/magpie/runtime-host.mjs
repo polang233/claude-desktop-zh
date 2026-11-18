@@ -12,6 +12,7 @@ const canonical = value => JSON.stringify(value && typeof value === 'object'
     : Object.fromEntries(Object.keys(value).sort().map(k => [k, JSON.parse(canonical(value[k]))]))
   : value);
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+const UPDATE_POLL_MS = 15_000;
 
 // Publish only fixed explanations. CLI errors can contain private paths or URLs.
 function preparationFailure(error) {
@@ -60,7 +61,8 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
   const startProcess = dependencies.spawn ?? spawn;
   const registry = dependencies.registrySnapshot ?? registrySnapshot;
   let current = { state: 'not-started', locale: options.locale ?? 'zh-Hans', automaticNextLaunch: false };
-  let starting, child, stopFile, stateFile, stopRequested = false;
+  let starting, pending, timer, watcher, stateFile, owner, attemptedRevision;
+  let stopRequested = false, ownerChanged = false;
   function publish(next) {
     const previous = current;
     current = next;
@@ -76,90 +78,156 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
       try { Promise.resolve(input.client?.tui?.showToast({ body: { title: 'Claude 中文', message, variant: 'info' } })).catch(() => {}); } catch {}
     }
   }
+  function ownsRegistry() {
+    if (stopRequested || ownerChanged) return false;
+    try { if (sha256(fs.readFileSync(owner.file)) === owner.hash) return true; } catch {}
+    ownerChanged = true;
+    publish({ ...current, state: 'owner-changed', automaticNextLaunch: false });
+    return false;
+  }
+  function stopWatcher() {
+    if (!watcher) return;
+    if (!watcher.stopping) {
+      fs.writeFileSync(watcher.stopFile, 'Plugin requested normal watcher stop.\n');
+      watcher.stopping = true;
+    }
+    return watcher.finished;
+  }
   function stop() {
     stopRequested = true;
-    if (stopFile) fs.writeFileSync(stopFile, 'Plugin requested normal watcher stop.\n');
-    publish({ ...current, state: 'stopping', automaticNextLaunch: false });
+    clearTimeout(timer);
+    stopWatcher();
+    publish({ ...current, state: watcher ? 'stopping' : 'stopped', automaticNextLaunch: false });
   }
   async function stopped() {
     stop();
-    await starting;
-    if (!child || child.exitCode != null) return;
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { child.off('exit', exited); reject(new Error('Watcher has not stopped yet. Try again shortly.')); }, 10_000);
-      function exited() { clearTimeout(timer); resolve(); }
-      child.once('exit', exited);
-      if (child.exitCode != null) exited();
-    });
+    let timeout;
+    try {
+      await Promise.race([
+        (async () => { await pending; await stopWatcher(); })(),
+        new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Watcher has not stopped yet. Try again shortly.')), 10_000); })
+      ]);
+    } finally { clearTimeout(timeout); }
   }
-  async function start() {
-    if (starting) return starting;
-    starting = (async () => {
-      if (stopRequested) { current = { ...current, state: 'stopped' }; return current; }
-      if (platform !== 'win32' || options.mode === 'copy' || options.allowWrites === false || options.runtimeAutoLoad === false) {
-        current = { ...current, state: 'disabled' }; return current;
-      }
-      if (!input?.directory || !path.isAbsolute(input.directory)) {
-        current = { ...current, state: 'unsupported-host' }; return current;
-      }
-      try {
-        const locale = localeValue(options.locale);
-        const config = controller.runtimeConfiguration();
-        const owner = registry(input.directory, options);
-        const parentStartedBefore = new Date().toISOString();
-        current = { state: 'preparing', locale, automaticNextLaunch: false };
-        const base = dependencies.runtimeDirectory ?? path.join(defaultLayout().originalStateDirectory, 'runtime');
-        assertPlainDirectory(base);
-        fs.mkdirSync(base, { recursive: true });
-        const run = fs.mkdtempSync(path.join(base, 'host-'));
-        stopFile = path.join(run, 'stop');
-        stateFile = path.join(run, 'status.json');
-        publish({ ...current, reportDirectory: run });
-        const bundle = await controller.prepareRuntime(path.join(run, 'language.js'));
-        if (!bundle.profileDirectory || !path.isAbsolute(bundle.profileDirectory)) throw new Error('Missing original profile binding.');
-        if (sha256(fs.readFileSync(owner.file)) !== owner.hash || stopRequested) {
-          publish({ ...current, state: stopRequested ? 'stopped' : 'owner-changed' }); return current;
+  function startWatcher(config, base, run, bundle) {
+    const stopFile = path.join(run, 'stop');
+    const args = ['-NoProfile', '-NonInteractive', '-File', path.join(config.cwd, 'scripts', 'test-runtime-autoload.ps1'),
+      '-Manifest', bundle.automationManifest, '-Watch', '-ActivateClaude', '-BuildDirectory', path.join(run, 'bridge'),
+      '-ParentProcessId', String(process.pid), '-ParentExecutable', process.execPath, '-ParentStartedBefore', new Date().toISOString(),
+      '-RegistryFile', owner.file, '-RegistrySha256', owner.hash, '-StopFile', stopFile,
+      '-SetupProfileDirectory', bundle.profileDirectory, '-SetupStateDirectory', path.join(base, 'setup-state'),
+      '-SetupNodeExecutable', config.executable, '-SetupCliPath', config.cli];
+    if (dependencies.skipClaudeStartedThrough) args.push('-SkipClaudeStartedThrough', dependencies.skipClaudeStartedThrough);
+    const child = startProcess('powershell.exe', args, { cwd: config.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+    let resolveExit;
+    const active = { stopFile, finished: new Promise(resolve => { resolveExit = resolve; }), stopping: false };
+    watcher = active;
+    publish({ ...current, state: 'starting' });
+    let output = '';
+    child.stdout.on('data', chunk => {
+      if (watcher !== active || active.stopping) return;
+      output = (output + chunk.toString()).slice(-32768);
+      let end;
+      while ((end = output.indexOf('\n')) >= 0) {
+        const line = output.slice(0, end).trim(); output = output.slice(end + 1);
+        if (line.startsWith('Watching original Claude')) publish({ ...current, state: 'watching', automaticNextLaunch: true });
+        else if (line.startsWith('{')) {
+          try {
+            const result = JSON.parse(line);
+            if (result.state === 'WaitingForNormalExit') publish({ ...current, state: 'waiting-for-normal-exit', setupState: result.state, automaticNextLaunch: false });
+            else if (result.state === 'RuntimeSetupReady') publish({ ...current, setupState: result.state, setupChanged: result.changed === true, setupJournal: result.journal });
+            else if (typeof result.state === 'string') publish({ ...current, lastResult: result.state, lastApplicationPid: result.applicationPid ?? 0 });
+          } catch { /* Only fixed JSON result lines are consumed. */ }
         }
-        const args = ['-NoProfile', '-NonInteractive', '-File', path.join(config.cwd, 'scripts', 'test-runtime-autoload.ps1'),
-          '-Manifest', bundle.automationManifest, '-Watch', '-ActivateClaude', '-BuildDirectory', path.join(run, 'bridge'),
-          '-ParentProcessId', String(process.pid), '-ParentExecutable', process.execPath, '-ParentStartedBefore', parentStartedBefore,
-          '-RegistryFile', owner.file, '-RegistrySha256', owner.hash, '-StopFile', stopFile,
-          '-SetupProfileDirectory', bundle.profileDirectory, '-SetupStateDirectory', path.join(base, 'setup-state'),
-          '-SetupNodeExecutable', config.executable, '-SetupCliPath', config.cli];
-        child = startProcess('powershell.exe', args, { cwd: config.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
-        publish({ ...current, state: 'starting', reportDirectory: run });
-        let pending = '';
-        child.stdout.on('data', chunk => {
-          pending = (pending + chunk.toString()).slice(-32768);
-          let end;
-          while ((end = pending.indexOf('\n')) >= 0) {
-            const line = pending.slice(0, end).trim(); pending = pending.slice(end + 1);
-            if (line.startsWith('Watching original Claude')) publish({ ...current, state: 'watching', automaticNextLaunch: true });
-            else if (line.startsWith('{')) {
-              try {
-                const result = JSON.parse(line);
-                if (result.state === 'WaitingForNormalExit') publish({ ...current, state: 'waiting-for-normal-exit', setupState: result.state, automaticNextLaunch: false });
-                else if (result.state === 'RuntimeSetupReady') publish({ ...current, setupState: result.state, setupChanged: result.changed === true, setupJournal: result.journal });
-                else if (typeof result.state === 'string') publish({ ...current, lastResult: result.state, lastApplicationPid: result.applicationPid ?? 0 });
-              } catch { /* Only fixed JSON result lines are consumed. */ }
-            }
-          }
-        });
-        // Drain stderr without publishing paths, settings or native diagnostics.
-        child.stderr.on('data', () => { publish({ ...current, runnerReportedError: true }); });
-        child.once('error', () => { publish({ ...current, state: 'watcher-start-failed', automaticNextLaunch: false }); });
-        child.once('exit', code => { publish({ ...current, state: 'stopped', exitCode: code, automaticNextLaunch: false }); });
-        child.unref?.();
-        child.stdout.unref?.();
-        child.stderr.unref?.();
-        return current;
-      } catch (error) {
-        if (child && stopFile) { try { fs.writeFileSync(stopFile, 'Stop after watcher initialization failure.\n'); } catch {} }
-        publish({ ...current, state: 'preparation-failed', automaticNextLaunch: false, ...preparationFailure(error) });
-        return current;
       }
-    })();
-    return starting;
+    });
+    child.stderr.on('data', () => {
+      if (watcher === active && !active.stopping) publish({ ...current, runnerReportedError: true });
+    });
+    function ended(state, exitCode) {
+      if (watcher !== active) return;
+      watcher = undefined;
+      if (stopRequested || !active.stopping) publish({ ...current, state: stopRequested ? 'stopped' : state, exitCode, automaticNextLaunch: false });
+      resolveExit();
+    }
+    child.once('error', () => ended('watcher-start-failed'));
+    child.once('exit', code => ended(code === 0 ? 'stopped' : 'watcher-start-failed', code));
+    child.unref?.();
+    child.stdout.unref?.();
+    child.stderr.unref?.();
+  }
+  async function probeSource() {
+    const binding = await controller.runtimeSource();
+    if (!path.isAbsolute(binding.source) || !/^[a-f0-9]{64}$/.test(binding.revision)) throw new Error('Invalid runtime source identity.');
+    return binding;
+  }
+  async function reconcile() {
+    if (!ownsRegistry()) return;
+    let binding;
+    try { binding = await probeSource(); }
+    catch {
+      if (!ownsRegistry()) return;
+      attemptedRevision = undefined;
+      publish({ state: 'source-unverified', locale: current.locale, automaticNextLaunch: false });
+      await stopWatcher();
+      return;
+    }
+    if (!ownsRegistry() || binding.revision === attemptedRevision) return;
+    if (controller.state?.().busy) return;
+    const state = attemptedRevision ? 'rebuilding' : 'preparing';
+    publish({ state, locale: current.locale, automaticNextLaunch: false });
+    await stopWatcher();
+    if (!ownsRegistry()) return;
+    if (controller.state?.().busy) return;
+    attemptedRevision = binding.revision;
+    const base = dependencies.runtimeDirectory ?? path.join(defaultLayout().originalStateDirectory, 'runtime');
+    assertPlainDirectory(base);
+    fs.mkdirSync(base, { recursive: true });
+    const run = fs.mkdtempSync(path.join(base, 'host-'));
+    stateFile = path.join(run, 'status.json');
+    publish({ ...current, reportDirectory: run });
+    const bundle = await controller.prepareRuntime(path.join(run, 'language.js'), binding.source);
+    if (!ownsRegistry()) return;
+    if (!bundle.profileDirectory || !path.isAbsolute(bundle.profileDirectory)) throw new Error('Missing original profile binding.');
+    let confirmed;
+    try { confirmed = await probeSource(); } catch {}
+    if (!ownsRegistry()) return;
+    if (confirmed?.revision !== binding.revision) {
+      attemptedRevision = undefined;
+      publish({ ...current, state: 'rebuilding' });
+      return;
+    }
+    startWatcher(controller.runtimeConfiguration(), base, run, bundle);
+  }
+  function cycle() {
+    pending = reconcile().catch(error => {
+      if (!stopRequested && !ownerChanged) publish({ ...current, state: 'preparation-failed', automaticNextLaunch: false, ...preparationFailure(error) });
+    }).then(() => {
+      if (!stopRequested && !ownerChanged) {
+        timer = setTimeout(cycle, dependencies.pollIntervalMs ?? UPDATE_POLL_MS);
+        timer.unref();
+      }
+      return current;
+    });
+    return pending;
+  }
+  function start() {
+    if (starting) return starting;
+    if (stopRequested) return Promise.resolve(current);
+    if (platform !== 'win32' || options.mode === 'copy' || options.allowWrites === false || options.runtimeAutoLoad === false) {
+      current = { ...current, state: 'disabled' };
+    } else if (!input?.directory || !path.isAbsolute(input.directory)) {
+      current = { ...current, state: 'unsupported-host' };
+    } else {
+      try {
+        current = { ...current, locale: localeValue(options.locale) };
+        owner = registry(input.directory, options);
+        return starting = cycle();
+      } catch (error) {
+        publish({ ...current, state: 'preparation-failed', ...preparationFailure(error) });
+      }
+    }
+    return starting = Promise.resolve(current);
   }
   return { start, stop, stopped, state: () => ({ ...current }) };
 }

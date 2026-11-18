@@ -93,6 +93,25 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
         preferences: settings.get?.() ?? { locale: options.locale ?? 'zh-Hans', runtimeAutoLoad: options.runtimeAutoLoad !== false },
         canSave: typeof settings.save === 'function' });
     }
+    if (request.method === 'GET' && target.pathname === '/api/maintenance') {
+      let resources = 'unknown';
+      if (options.mode === 'copy') resources = 'copy';
+      else if (activeJob || controller.state().busy) resources = 'busy';
+      else {
+        try {
+          const check = await controller.execute('check');
+          if (check.protectedInstall) resources = 'protected';
+          else if (check.runtimeOnly || !check.eligible) resources = 'unsupported';
+          else resources = controller.state().allowWrites === false ? 'disabled' : 'eligible';
+        } catch {
+          if (controller.state().busy) resources = 'busy';
+        }
+      }
+      const runtime = settings.runtime?.();
+      return send(response, 200, { resources, runtime: runtime && {
+        state: runtime.state, lastResult: runtime.lastResult, message: runtime.message
+      } });
+    }
     if (request.method === 'POST' && target.pathname === '/api/preferences') {
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
       let value;

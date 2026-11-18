@@ -11,7 +11,8 @@ test('unified page saves preferences, handles failures, and switches panels with
   await vm.runInNewContext(fs.readFileSync(new URL('../integrations/magpie/page/app.js', import.meta.url), 'utf8'), {
     ...ui, URLSearchParams, location: { hash: '#token=' + 'a'.repeat(64), pathname: '/' }, history: { replaceState() {} },
     parent: { postMessage: value => messages.push(value) }, addEventListener() {},
-    fetch: async (url, init) => { calls.push({url,init}); return { ok: !fail, json: async () => url === '/api/state' ? { paths: { mode: 'original', allowWrites: true }, preferences: { locale: 'zh-Hans', runtimeAutoLoad: true }, canSave: true } : {error:'Unavailable'} }; }
+    fetch: async (url, init) => { calls.push({url,init}); return { ok: !fail, json: async () => url === '/api/state' ? { paths: { mode: 'original', allowWrites: true }, preferences: { locale: 'zh-Hans', runtimeAutoLoad: true }, canSave: true } :
+      url === '/api/maintenance' ? { resources: 'protected', runtime: { state: 'watching', lastResult: 'Applied' } } : {error:'Unavailable'} }; }
   });
   const e = id => ui.elements.get(id);
   assert.equal(messages[0].method, 'hello', 'The magpie host must receive its page handshake');
@@ -19,7 +20,11 @@ test('unified page saves preferences, handles failures, and switches panels with
   ui.tabs[0].events.keydown({key:'ArrowRight',preventDefault(){}});
   assert.equal(ui.tabs[1].attributes['aria-selected'], 'true');
   assert.equal(ui.panels[0].attributes.hidden, 'until-found');
-  assert.equal(calls.length, 1);
+  await e('refresh-maintenance').click();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, undefined);
+  assert.match(e('runtime-status').textContent, /已加载中文/);
+  assert.match(e('resource-status').textContent, /不可改写/);
   ui.panels[0].events.beforematch();
   assert.equal(ui.tabs[0].attributes['aria-selected'], 'true');
   e('locale').value = 'zh-Hant'; e('runtime-auto').checked = false;

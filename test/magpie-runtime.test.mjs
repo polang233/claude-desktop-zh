@@ -25,6 +25,24 @@ function fakeChild() {
   child.kill = () => { throw new Error('Must stop normally'); };
   return child;
 }
+function binding(root, name) {
+  return { source: path.join(root, name), revision: sha256(Buffer.from(name)) };
+}
+function runtimeController(f, overrides = {}) {
+  return {
+    runtimeSource: async () => binding(f.root, 'Claude-old'),
+    runtimeConfiguration: () => ({ cwd: project, executable: process.execPath, cli: path.join(project, 'bin/claude-3p-zh.mjs') }),
+    prepareRuntime: async output => ({ automationManifest: output + '.automation.json', profileDirectory: path.join(f.root, 'profile') }),
+    ...overrides
+  };
+}
+async function until(predicate) {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.fail('Runtime did not reach the expected state');
+}
 
 test('registry binds the actual plugin, saved options and enabled state', t => {
   const f = fixture(t, { locale: 'zh-Hant', runtimeAutoLoad: true });
@@ -57,7 +75,7 @@ test('registry accepts root, npm and GitHub installs and rejects ambiguous or un
 
 test('default locale starts one hidden owner-bound watcher and stop uses a file', async t => {
   const f = fixture(t), calls = [], child = fakeChild(), toasts = [];
-  const controller = { runtimeConfiguration: () => ({ cwd: project, executable: process.execPath, cli: path.join(project, 'bin/claude-3p-zh.mjs') }), prepareRuntime: async output => ({ automationManifest: output + '.automation.json', profileDirectory: path.join(f.root, 'profile') }) };
+  const controller = runtimeController(f);
   const runtime = createRuntimeHost({ directory: f.root, client: { tui: { showToast: async value => toasts.push(value.body.message) } } }, f.options, controller, {
     platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'),
     spawn: (...args) => { calls.push(args); return child; }
@@ -88,10 +106,11 @@ test('default locale starts one hidden owner-bound watcher and stop uses a file'
 
 test('an options change during catalog preparation prevents an obsolete watcher', async t => {
   const f = fixture(t); let release, spawned = false;
-  const runtime = createRuntimeHost({ directory: f.root }, {}, {
-    runtimeConfiguration: () => ({ cwd: project }), prepareRuntime: () => new Promise(resolve => { release = resolve; })
-  }, { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => { spawned = true; } });
+  const runtime = createRuntimeHost({ directory: f.root }, {}, runtimeController(f, {
+    prepareRuntime: () => new Promise(resolve => { release = resolve; })
+  }), { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => { spawned = true; } });
   const ready = runtime.start();
+  await until(() => release);
   fs.writeFileSync(f.registry, '{"plugins":[]}');
   release({ automationManifest: 'not-run', profileDirectory: path.join(f.root, 'profile') });
   await ready;
@@ -100,10 +119,9 @@ test('an options change during catalog preparation prevents an obsolete watcher'
 
 test('settings restart waits for the old watcher to exit through its stop file', async t => {
   const f = fixture(t), child = fakeChild();
-  const runtime = createRuntimeHost({ directory: f.root }, {}, {
-    runtimeConfiguration: () => ({ cwd: project }),
-    prepareRuntime: async output => ({ automationManifest: output + '.json', profileDirectory: path.join(f.root, 'profile') })
-  }, { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => child });
+  const runtime = createRuntimeHost({ directory: f.root }, {}, runtimeController(f), {
+    platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => child
+  });
   await runtime.start();
   const waiting = runtime.stopped();
   await new Promise(resolve => setImmediate(resolve));
@@ -112,6 +130,90 @@ test('settings restart waits for the old watcher to exit through its stop file',
   child.emit('exit', 0);
   await waiting;
   assert.equal(runtime.state().state, 'stopped');
+
+  const replacementChild = fakeChild();
+  const skipClaudeStartedThrough = '639305767399865988';
+  let replacementArgs;
+  const replacement = createRuntimeHost({ directory: f.root }, {}, runtimeController(f), {
+    platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), skipClaudeStartedThrough,
+    spawn: (_, args) => { replacementArgs = args; return replacementChild; }
+  });
+  await replacement.start();
+  try {
+    const index = replacementArgs.indexOf('-SkipClaudeStartedThrough');
+    assert.ok(index > 0);
+    assert.equal(replacementArgs[index + 1], skipClaudeStartedThrough);
+  } finally {
+    replacement.stop();
+    replacementChild.emit('exit', 0);
+  }
+});
+
+test('a new installation revision stops the old watcher before building and watching the new source', async t => {
+  const f = fixture(t), builds = [], children = [];
+  let source = binding(f.root, 'Claude-4');
+  const controller = runtimeController(f, {
+    runtimeSource: async () => source,
+    prepareRuntime: async (output, selected) => {
+      builds.push(selected);
+      return { automationManifest: output + '.json', profileDirectory: path.join(f.root, 'profile') };
+    }
+  });
+  const runtime = createRuntimeHost({ directory: f.root }, {}, controller, {
+    platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), pollIntervalMs: 5,
+    spawn: (_, args) => {
+      const child = fakeChild();
+      children.push({ child, stop: args[args.indexOf('-StopFile') + 1] });
+      return child;
+    }
+  });
+  try {
+    await runtime.start();
+    children[0].child.stdout.write('Watching original Claude\n{"state":"Applied","applicationPid":2}\n');
+    assert.equal(runtime.state().lastResult, 'Applied');
+    source = binding(f.root, 'Claude-5');
+    await until(() => fs.existsSync(children[0].stop));
+    children[0].child.stdout.write('Watching original Claude\n');
+    assert.equal(runtime.state().state, 'rebuilding');
+    assert.equal(runtime.state().automaticNextLaunch, false);
+    assert.deepEqual(builds, [binding(f.root, 'Claude-4').source]);
+    children[0].child.emit('exit', 0);
+    await until(() => children.length === 2);
+    assert.deepEqual(builds, [binding(f.root, 'Claude-4').source, source.source]);
+    assert.notEqual(children[1].stop, children[0].stop);
+    assert.equal(runtime.state().lastResult, undefined);
+    children[1].child.stdout.write('Watching original Claude\n');
+    assert.equal(runtime.state().automaticNextLaunch, true);
+  } finally {
+    runtime.stop();
+    children.forEach(({ child }) => child.emit('exit', 0));
+  }
+});
+
+test('an installation that changes during export never starts a watcher with the stale bundle', async t => {
+  const f = fixture(t), builds = [], children = [];
+  const old = binding(f.root, 'Claude-4'), updated = binding(f.root, 'Claude-5');
+  let source = old;
+  const controller = runtimeController(f, {
+    runtimeSource: async () => source,
+    prepareRuntime: async (output, selected) => {
+      builds.push(selected); source = updated;
+      return { automationManifest: output + '.json', profileDirectory: path.join(f.root, 'profile') };
+    }
+  });
+  const runtime = createRuntimeHost({ directory: f.root }, {}, controller, {
+    platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), pollIntervalMs: 5,
+    spawn: () => { const child = fakeChild(); children.push(child); return child; }
+  });
+  try {
+    assert.equal((await runtime.start()).state, 'rebuilding');
+    assert.equal(children.length, 0);
+    await until(() => children.length > 0);
+    assert.deepEqual(builds, [old.source, updated.source]);
+  } finally {
+    runtime.stop();
+    children.forEach(child => child.emit('exit', 0));
+  }
 });
 
 test('disabled or unsupported modes never prepare catalogs or start a process', async () => {
@@ -130,9 +232,10 @@ test('preparation failures publish actionable explanations without private CLI d
     ['Unknown failure private-token', 'preparation-failed', /准备失败/]
   ]) {
     const f = fixture(t), toasts = [];
-    const runtime = createRuntimeHost({ directory: f.root, client: { tui: { showToast: async ({ body }) => toasts.push(body.message) } } }, {}, {
-      runtimeConfiguration: () => ({ cwd: project }), prepareRuntime: async () => { throw new Error(error); }
-    }, { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => assert.fail('Failed preparation must not launch UI') });
+    const runtime = createRuntimeHost({ directory: f.root, client: { tui: { showToast: async ({ body }) => toasts.push(body.message) } } }, {}, runtimeController(f, {
+      prepareRuntime: async () => { throw new Error(error); }
+    }), { platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'), spawn: () => assert.fail('Failed preparation must not launch UI') });
+    t.after(() => runtime.stop());
     const state = await runtime.start();
     assert.equal(state.state, 'preparation-failed');
     assert.equal(state.failureCode, code);

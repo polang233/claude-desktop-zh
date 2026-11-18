@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLayout } from '../lib/discover.mjs';
+import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLayout, runtimeSourceBinding } from '../lib/discover.mjs';
 
 function home(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), '3p-zh-discover-'));
@@ -78,6 +78,22 @@ test('Linux discovery does not treat LOCALAPPDATA as a Windows install directory
   app(source);
   assert.equal(discoverInstall(env, () => [], 'win32').source, source);
   assert.throws(() => discoverInstall(env, () => [], 'linux'), /No readable Claude/);
+});
+
+test('runtime source identity changes for a new path or an in-place frontend replacement', t => {
+  const { root } = home(t);
+  const source = path.join(root, 'Claude-4');
+  const updated = path.join(root, 'Claude-5');
+  for (const directory of [source, updated]) {
+    fs.mkdirSync(path.join(directory, 'resources'), { recursive: true });
+    fs.writeFileSync(path.join(directory, 'Claude.exe'), '');
+    fs.writeFileSync(path.join(directory, 'resources', 'ion-dist.asar'), 'initial');
+  }
+  const initial = runtimeSourceBinding(source);
+  assert.deepEqual(runtimeSourceBinding(source), initial);
+  assert.notEqual(runtimeSourceBinding(updated).revision, initial.revision);
+  fs.writeFileSync(path.join(source, 'resources', 'ion-dist.asar'), 'replacement frontend');
+  assert.notEqual(runtimeSourceBinding(source).revision, initial.revision);
 });
 
 test('deduplicates overlapping profile and cache paths on Windows', { skip: process.platform !== 'win32' }, t => {

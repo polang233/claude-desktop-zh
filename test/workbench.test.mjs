@@ -67,6 +67,24 @@ test('normal browser GETs need no Origin; no public endpoint reveals the capabil
   } finally { await workbench.close(); }
 });
 
+test('maintenance reports runtime readiness independently of protected resources', async () => {
+  const commands = [];
+  const workbench = createWorkbench({ projectDirectory }, async (_, args) => {
+    commands.push(args[0]);
+    return { eligible: false, protectedInstall: true, runtimeOnly: true };
+  }, undefined, { runtime: () => ({ state: 'watching', lastResult: 'Applied', reportDirectory: 'private-report' }) });
+  try {
+    const address = await workbench.listen();
+    const base = `http://127.0.0.1:${address.port}`;
+    const token = new URLSearchParams(new URL(workbench.url()).hash.slice(1)).get('token');
+    assert.equal((await fetch(base + '/api/maintenance')).status, 401);
+    const response = await fetch(base + '/api/maintenance', { headers: { authorization: 'Bearer ' + token } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { resources: 'protected', runtime: { state: 'watching', lastResult: 'Applied' } });
+    assert.deepEqual(commands, ['original-check']);
+  } finally { await workbench.close(); }
+});
+
 test('malicious Host, Origin and cross-site fetches are refused, even with a valid bearer', async () => {
   const { workbench, base, headers } = await listen();
   try {

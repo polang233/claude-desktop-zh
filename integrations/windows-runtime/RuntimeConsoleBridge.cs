@@ -32,6 +32,7 @@ public static class RuntimeConsoleBridge {
     static int pickerForegroundPid,pickerOwnerPid,pickerZeroForegroundSamples;
     static string pickerWindowClass="NotObserved",pickerForegroundKind="NotObserved";
     static int pickerIdentityBits;
+    static int pickerVisibilityWaits;
     static bool scriptSubmitted;
     static string devToolsOpenMethod="NotRequested";
     static Process lifetimeParent;
@@ -79,6 +80,16 @@ public static class RuntimeConsoleBridge {
     }
     public static bool ConsolePrompt(string name) { return Array.IndexOf(PromptNames,name)>=0; }
     public static bool ConsolePanel(string name) { return name=="Console" || name=="控制台" || name=="主控台"; }
+    public static int ConsoleTabIndex(IList<string> ids) {
+        if(ids.Count==1)return 0;
+        // Chromium can show its Console tab in both the main panel and the drawer.
+        // Only disambiguate that known pair. Unknown duplicate controls fail closed.
+        if(ids.Count==2) {
+            if(ids[0]=="tab-console" && ids[1]=="tab-console-view")return 0;
+            if(ids[1]=="tab-console" && ids[0]=="tab-console-view")return 1;
+        }
+        return -1;
+    }
     public static bool EmptyPrompt(string value) { return value=="" || value=="\n" || value=="\r" || value=="\r\n"; }
     public static string PromptShape(string value) {
         if(value=="")return "empty";
@@ -147,20 +158,32 @@ public static class RuntimeConsoleBridge {
     public static bool MayUseDialog(bool standard,bool browserOwner,bool sameExe,bool sameGeneration,bool rootOrDirectChild) {
         return standard && browserOwner && sameExe && sameGeneration && rootOrDirectChild;
     }
+    const int DialogIdentityWithoutVisibility=126;
+    const int DialogVisibilityWaitMs=5000;
+    public static bool MayWaitForDialogVisibility(int bits,bool sameForeground,bool alreadyOpen,long elapsed) {
+        return bits==DialogIdentityWithoutVisibility && sameForeground && !alreadyOpen && elapsed<DialogVisibilityWaitMs;
+    }
     static bool DialogIdentity(IntPtr handle,Process browser,string exe,long started,int expectedPid=0,long expectedStart=0) {
+        int bits;
+        long dialogStart;
+        return DialogIdentity(handle,browser,exe,started,out bits,out dialogStart,expectedPid,expectedStart);
+    }
+    static bool DialogIdentity(IntPtr handle,Process browser,string exe,long started,out int bits,out long dialogStart,int expectedPid=0,long expectedStart=0) {
+        bits=0; dialogStart=0;
         try {
             bool browserAlive=Identity(browser,exe,started);
-            if(handle==GetForegroundWindow())pickerIdentityBits=browserAlive?64:0;
+            bits=browserAlive?64:0;
             if(!browserAlive)return false;
             int pid=(int)Pid(handle);
             var dialog=Process.GetProcessById(pid);
-            long dialogStart=dialog.StartTime.ToUniversalTime().Ticks;
-            if(expectedPid!=0 && (pid!=expectedPid || dialogStart!=expectedStart))return false;
+            dialogStart=dialog.StartTime.ToUniversalTime().Ticks;
+            if((expectedPid!=0 && pid!=expectedPid) || (expectedStart!=0 && dialogStart!=expectedStart))return false;
             bool visible=IsWindowVisible(handle),standard=ClassName(handle)=="#32770",owner=(int)Pid(GetWindow(handle,4))==browser.Id;
             bool sameExe=Identity(dialog,exe,dialogStart),generation=dialogStart>=started,family=pid==browser.Id || ParentId(pid)==browser.Id;
-            if(handle==GetForegroundWindow())pickerIdentityBits=(visible?1:0)|(standard?2:0)|(owner?4:0)|(sameExe?8:0)|(generation?16:0)|(family?32:0)|64;
+            bits=(visible?1:0)|(standard?2:0)|(owner?4:0)|(sameExe?8:0)|(generation?16:0)|(family?32:0)|64;
             return MayUseDialog(visible && standard,owner,sameExe,generation,family);
         } catch { return false; }
+        finally { if(handle==GetForegroundWindow())pickerIdentityBits=bits; }
     }
     static List<IntPtr> FileDialogs(Process browser,string exe,long started) {
         var windows=new List<IntPtr>();
@@ -169,6 +192,22 @@ public static class RuntimeConsoleBridge {
             return true;
         },IntPtr.Zero);
         return windows;
+    }
+    static bool OwnedStandardDialog(string windowClass,int ownerPid,int claudePid) {
+        return windowClass=="#32770" && ownerPid==claudePid;
+    }
+    static HashSet<IntPtr> PriorFileDialogs(int claudePid) {
+        var windows=new HashSet<IntPtr>();
+        // Take the exclusion snapshot even for hidden or not yet queryable
+        // helpers. Only live, fully verified, visible dialogs may receive input.
+        if(!EnumWindows(delegate(IntPtr h,IntPtr unused) {
+            if(OwnedStandardDialog(ClassName(h),(int)Pid(GetWindow(h,4)),claudePid))windows.Add(h);
+            return true;
+        },IntPtr.Zero))throw new InvalidOperationException("DialogSnapshotFailed");
+        return windows;
+    }
+    static bool NewCatalogDialog(IntPtr handle,HashSet<IntPtr> prior) {
+        return handle!=IntPtr.Zero && !prior.Contains(handle);
     }
     static bool CatalogForeground(Process process,string exe,long started,IntPtr handle,int dialogPid,long dialogStart,string stage) {
         focusStage=stage;
@@ -202,9 +241,35 @@ public static class RuntimeConsoleBridge {
             if(!Regex.IsMatch(pickerWindowClass,@"^[a-zA-Z0-9_#.-]{1,80}$"))pickerWindowClass="OtherClass";
             pickerForegroundKind=pickerForegroundPid==0?"NoWindow":pickerForegroundPid==process.Id?"OriginalClaude":"OtherApplication";
             if(pickerForegroundPid==0) { pickerZeroForegroundSamples++; Thread.Sleep(100); continue; }
-            if(pickerForegroundPid!=process.Id) {
-                if(DialogIdentity(foreground,process,exe,started))pickerForegroundKind="OriginalClaudeChild";
-                else {
+            if(!NewCatalogDialog(foreground,prior))return "ExistingFileDialog";
+            int observedBits;
+            long observedStart;
+            if(DialogIdentity(foreground,process,exe,started,out observedBits,out observedStart,pickerForegroundPid)) {
+                pickerForegroundKind=pickerForegroundPid==process.Id?"OriginalClaude":"OriginalClaudeChild";
+            } else if(MayWaitForDialogVisibility(observedBits,GetForegroundWindow()==foreground,prior.Contains(foreground),0)) {
+                // A cold-start picker can own the foreground before its window
+                // is reported visible. Wait on this exact HWND, PID and start
+                // time. Keep the full identity test before touching controls.
+                catalogDialogState="WaitingForVisibility";
+                var visibilityClock=Stopwatch.StartNew();
+                while(MayWaitForDialogVisibility(observedBits,GetForegroundWindow()==foreground,false,visibilityClock.ElapsedMilliseconds)
+                      && clock.ElapsedMilliseconds<15000) {
+                    pickerVisibilityWaits++;
+                    Thread.Sleep(100);
+                    if(GetForegroundWindow()!=foreground)return "FocusChanged";
+                    if(visibilityClock.ElapsedMilliseconds>=DialogVisibilityWaitMs || clock.ElapsedMilliseconds>=15000)
+                        return "CatalogDialogNotVisible";
+                    long sampledStart;
+                    if(DialogIdentity(foreground,process,exe,started,out observedBits,out sampledStart,pickerForegroundPid,observedStart)) {
+                        catalogDialogState="WaitingForControls";
+                        pickerForegroundKind=pickerForegroundPid==process.Id?"OriginalClaude":"OriginalClaudeChild";
+                        break;
+                    }
+                }
+                if(GetForegroundWindow()!=foreground)return "FocusChanged";
+                if(observedBits==DialogIdentityWithoutVisibility)return "CatalogDialogNotVisible";
+                if(catalogDialogState!="WaitingForControls")return "CatalogDialogIdentityChanged";
+            } else if(pickerForegroundPid!=process.Id) {
                 // The helper process/module list and modal window can become
                 // queryable just after foreground activation. No input is sent
                 // during this bounded wait; every identity condition must pass.
@@ -217,15 +282,15 @@ public static class RuntimeConsoleBridge {
                     if(String.Equals(activePath,Path.Combine(windows,"System32","ApplicationFrameHost.exe"),StringComparison.OrdinalIgnoreCase))pickerForegroundKind="WindowsApplicationFrameHost";
                 } catch { pickerForegroundKind="UnreadableApplication"; }
                 return "FocusChanged";
-                }
             }
-            var dialogs=FileDialogs(process,exe,started).FindAll(h=>!prior.Contains(h));
+            var dialogs=FileDialogs(process,exe,started).FindAll(h=>NewCatalogDialog(h,prior));
             if(dialogs.Count>1)return "AmbiguousCatalogDialog";
             if(dialogs.Count==0) { Thread.Sleep(100); continue; }
             IntPtr handle=dialogs[0];
-            if(GetForegroundWindow()!=handle) { Thread.Sleep(100); continue; }
+            if(handle!=foreground || GetForegroundWindow()!=handle) { Thread.Sleep(100); continue; }
             int dialogPid=(int)Pid(handle);
             long dialogStart=Process.GetProcessById(dialogPid).StartTime.ToUniversalTime().Ticks;
+            if(observedStart!=0 && (dialogPid!=pickerForegroundPid || dialogStart!=observedStart))return "CatalogDialogIdentityChanged";
             var root=AutomationElement.FromHandle(handle);
             AutomationElement filename=null,open=null;
             IntPtr nativeOpen=GetDlgItem(handle,1);
@@ -382,7 +447,10 @@ public static class RuntimeConsoleBridge {
         foreach(AutomationElement text in texts)if(text.Current.Name==marker)return true;
         return false;
     }
-    static string Apply(string exe,string payload,string hash,string marker,int timeout,string catalog,string catalogHash,bool activateClaude) {
+    static bool MatchesWatchTarget(int expectedPid,long expectedStart,int pid,long started) {
+        return expectedPid==0 || (expectedPid==pid && expectedStart==started);
+    }
+    static string Apply(string exe,string payload,string hash,string marker,int timeout,string catalog,string catalogHash,bool activateClaude,int watchPid,long watchStart) {
         if(!LifetimeAlive())return "OwnerChanged";
         exe=Path.GetFullPath(exe);
         if(!File.Exists(exe) || !String.Equals(Path.GetFileName(exe),"Claude.exe",StringComparison.OrdinalIgnoreCase))return "InvalidApplication";
@@ -419,8 +487,9 @@ public static class RuntimeConsoleBridge {
             }
             if(matches.Count!=1)return matches.Count==0?"OriginalWindowNotFound":"AmbiguousOriginalWindows";
             var selected=matches[0];
-            var selectedTools=Tools(selected.Id);
             long selectedStart=selected.StartTime.ToUniversalTime().Ticks;
+            if(!MatchesWatchTarget(watchPid,watchStart,selected.Id,selectedStart))return "ApplicationExited";
+            var selectedTools=Tools(selected.Id);
             var dialogs=FileDialogs(selected,exe,selectedStart);
             if(!MayActivate(matches.Count,dialogs.Count,selectedTools.Count))return dialogs.Count>0?"ExistingFileDialog":"AmbiguousDevTools";
             IntPtr selectedWindow=selectedTools.Count==1?selectedTools[0]:selected.MainWindowHandle;
@@ -444,6 +513,7 @@ public static class RuntimeConsoleBridge {
             if(String.Equals(process.ProcessName,"Claude",StringComparison.OrdinalIgnoreCase))foregroundKind="OtherClaudeOrUnreadable";
             return "DeferredNoForegroundClaude";
         }
+        if(!MatchesWatchTarget(watchPid,watchStart,process.Id,started))return "DeferredNoForegroundClaude";
         foregroundKind="OriginalClaude";
         int pid=process.Id;
         targetPid=pid; targetStarted=started;
@@ -505,16 +575,20 @@ public static class RuntimeConsoleBridge {
             // caused thousands of cross-process UIA calls on a busy Console.
             var nodes=root.FindAll(TreeScope.Descendants,new AndCondition(consoleNames,consoleTypes));
             uiNodes=nodes.Count; tabItems=0; editInputs=0; consoleLabels=0;
+            var matches=new List<AutomationElement>();
+            var tabIds=new List<string>();
             foreach(AutomationElement node in nodes) {
                 var type=node.Current.ControlType;
                 if(type==ControlType.TabItem)tabItems++;
-                if(type==ControlType.Edit)editInputs++;
                 if(!ConsolePanel(node.Current.Name))continue;
                 consoleLabels++;
-                if(type!=ControlType.TabItem && type!=ControlType.Button)continue;
-                if(console!=null)return "AmbiguousConsole";
-                console=node;
+                if(node.Current.ProcessId!=pid || !node.Current.IsEnabled || node.Current.IsOffscreen)continue;
+                matches.Add(node);
+                tabIds.Add(type==ControlType.TabItem?node.Current.AutomationId:"");
             }
+            int chosen=ConsoleTabIndex(tabIds);
+            if(chosen>=0)console=matches[chosen];
+            else if(matches.Count>1)return "AmbiguousConsole";
             if(console==null)Thread.Sleep(200);
         }
         if(console==null)return "ConsoleTabNotFound";
@@ -586,8 +660,8 @@ public static class RuntimeConsoleBridge {
         if(!verified)return "ConsoleValueNotVerified";
         // Address Enter only to the verified DevTools HWND, never the foreground chat.
         if(!DevToolsTarget(Title(handle),(int)Pid(handle),pid))return "DevToolsIdentityChanged";
-        var priorDialogs=new HashSet<IntPtr>(FileDialogs(process,exe,started));
-        if(priorDialogs.Count>0)return "ExistingFileDialog";
+        var priorDialogs=PriorFileDialogs(pid);
+        foreach(IntPtr prior in priorDialogs)if(IsWindowVisible(prior))return "ExistingFileDialog";
         focusStage="BeforeExecute"; foregroundIsDevTools=GetForegroundWindow()==handle; promptHasFocus=Same(prompt,AutomationElement.FocusedElement);
         if(!foregroundIsDevTools || !promptHasFocus)return "FocusChangedBeforeExecute";
         scriptSubmitted=true;
@@ -665,6 +739,11 @@ public static class RuntimeConsoleBridge {
         Require(ConsolePanel("控制台"));
         Require(!ConsolePanel("Console output"));
         Require(!ConsolePanel("Message Claude"));
+        Require(ConsoleTabIndex(new[]{"tab-console","tab-console-view"})==0);
+        Require(ConsoleTabIndex(new[]{"tab-console-view","tab-console"})==1);
+        Require(ConsoleTabIndex(new[]{""})==0);
+        Require(ConsoleTabIndex(new[]{"tab-console","tab-console"})==-1);
+        Require(ConsoleTabIndex(new[]{"tab-console","unknown"})==-1);
         Require(MayWrite(true,true,true,"Console prompt","\n"));
         Require(MayWrite(true,true,true,"Console prompt","\r\n"));
         Require(!MayWrite(true,true,true,"Console prompt"," "));
@@ -719,16 +798,43 @@ public static class RuntimeConsoleBridge {
         Require(!MayUseDialog(true,true,false,true,true));
         Require(!MayUseDialog(true,true,true,false,true));
         Require(!MayUseDialog(true,true,true,true,false));
+        Require(MayWaitForDialogVisibility(126,true,false,1999));
+        Require(MayWaitForDialogVisibility(126,true,false,4999));
+        Require(!MayWaitForDialogVisibility(126,true,false,5000));
+        Require(!MayWaitForDialogVisibility(126,false,false,0));
+        Require(!MayWaitForDialogVisibility(126,true,true,0));
+        Require(!MayWaitForDialogVisibility(127,true,false,0));
+        foreach(int identityBit in new[]{2,4,8,16,32,64})
+            Require(!MayWaitForDialogVisibility(126^identityBit,true,false,0));
+        Require(OwnedStandardDialog("#32770",10,10));
+        Require(!OwnedStandardDialog("#32770",11,10));
+        Require(!OwnedStandardDialog("Chrome_WidgetWin_1",10,10));
+        var oldDialog=new IntPtr(10);
+        var beforeSubmit=new HashSet<IntPtr>{oldDialog};
+        // The old handle remains excluded after it becomes visible.
+        Require(!NewCatalogDialog(oldDialog,beforeSubmit));
+        Require(NewCatalogDialog(new IntPtr(20),beforeSubmit));
+        Require(!NewCatalogDialog(IntPtr.Zero,beforeSubmit));
+        Require(MatchesWatchTarget(10,100,10,100));
+        Require(!MatchesWatchTarget(10,100,10,101));
+        Require(!MatchesWatchTarget(10,100,11,100));
+        Require(MatchesWatchTarget(0,0,11,100));
         Require(expectedParent==0?ParentId(Process.GetCurrentProcess().Id)>0:ParentId(Process.GetCurrentProcess().Id)==expectedParent);
     }
     static void Emit(string state,string errorKind) {
-            Console.WriteLine("{\"devToolsOpenMethod\":\""+devToolsOpenMethod+"\",\"state\":\""+state+"\",\"errorKind\":\""+errorKind+"\",\"scriptSubmitted\":"+scriptSubmitted.ToString().ToLowerInvariant()+",\"pickerIdentityBits\":"+pickerIdentityBits+",\"pickerForegroundPid\":"+pickerForegroundPid+",\"pickerOwnerPid\":"+pickerOwnerPid+",\"pickerZeroForegroundSamples\":"+pickerZeroForegroundSamples+",\"pickerWindowClass\":\""+pickerWindowClass+"\",\"pickerForegroundKind\":\""+pickerForegroundKind+"\",\"promptProcessId\":"+promptProcessId+",\"focusedProcessId\":"+focusedProcessId+",\"focusedNameIsPrompt\":"+focusedNameIsPrompt.ToString().ToLowerInvariant()+",\"activationRequested\":"+activationRequested.ToString().ToLowerInvariant()+",\"foregroundKind\":\""+foregroundKind+"\",\"observedForegroundPid\":"+observedForegroundPid+",\"applicationPid\":"+targetPid+",\"applicationStartTicks\":\""+targetStarted+"\",\"uiNodes\":"+uiNodes+",\"tabItems\":"+tabItems+",\"editInputs\":"+editInputs+",\"consoleLabels\":"+consoleLabels+",\"promptReadOnly\":"+promptReadOnly.ToString().ToLowerInvariant()+",\"promptValueLength\":"+promptValueLength+",\"promptValueShape\":\""+promptValueShape+"\",\"writtenValueLength\":"+writtenValueLength+",\"resumedOwnPayload\":"+resumedOwnPayload.ToString().ToLowerInvariant()+",\"catalogDialogState\":\""+catalogDialogState+"\",\"filenameCandidates\":"+filenameCandidates+",\"openCandidates\":"+openCandidates+",\"focusStage\":\""+focusStage+"\",\"foregroundIsDevTools\":"+foregroundIsDevTools.ToString().ToLowerInvariant()+",\"promptHasFocus\":"+promptHasFocus.ToString().ToLowerInvariant()+"}");
+            Console.WriteLine("{\"devToolsOpenMethod\":\""+devToolsOpenMethod+"\",\"state\":\""+state+"\",\"errorKind\":\""+errorKind+"\",\"scriptSubmitted\":"+scriptSubmitted.ToString().ToLowerInvariant()+",\"pickerIdentityBits\":"+pickerIdentityBits+",\"pickerVisibilityWaits\":"+pickerVisibilityWaits+",\"pickerForegroundPid\":"+pickerForegroundPid+",\"pickerOwnerPid\":"+pickerOwnerPid+",\"pickerZeroForegroundSamples\":"+pickerZeroForegroundSamples+",\"pickerWindowClass\":\""+pickerWindowClass+"\",\"pickerForegroundKind\":\""+pickerForegroundKind+"\",\"promptProcessId\":"+promptProcessId+",\"focusedProcessId\":"+focusedProcessId+",\"focusedNameIsPrompt\":"+focusedNameIsPrompt.ToString().ToLowerInvariant()+",\"activationRequested\":"+activationRequested.ToString().ToLowerInvariant()+",\"foregroundKind\":\""+foregroundKind+"\",\"observedForegroundPid\":"+observedForegroundPid+",\"applicationPid\":"+targetPid+",\"applicationStartTicks\":\""+targetStarted+"\",\"uiNodes\":"+uiNodes+",\"tabItems\":"+tabItems+",\"editInputs\":"+editInputs+",\"consoleLabels\":"+consoleLabels+",\"promptReadOnly\":"+promptReadOnly.ToString().ToLowerInvariant()+",\"promptValueLength\":"+promptValueLength+",\"promptValueShape\":\""+promptValueShape+"\",\"writtenValueLength\":"+writtenValueLength+",\"resumedOwnPayload\":"+resumedOwnPayload.ToString().ToLowerInvariant()+",\"catalogDialogState\":\""+catalogDialogState+"\",\"filenameCandidates\":"+filenameCandidates+",\"openCandidates\":"+openCandidates+",\"focusStage\":\""+focusStage+"\",\"foregroundIsDevTools\":"+foregroundIsDevTools.ToString().ToLowerInvariant()+",\"promptHasFocus\":"+promptHasFocus.ToString().ToLowerInvariant()+"}");
     }
     [STAThread] public static int Main(string[] args) {
         try {
-            if((args.Length==1 || args.Length==2) && args[0]=="--self-test") { SelfTest(args.Length==2?Int32.Parse(args[1]):0); Console.WriteLine("{\"state\":\"SelfTestPassed\",\"cases\":90,\"uiActions\":0}"); return 0; }
+            if((args.Length==1 || args.Length==2) && args[0]=="--self-test") { SelfTest(args.Length==2?Int32.Parse(args[1]):0); Console.WriteLine("{\"state\":\"SelfTestPassed\",\"cases\":117,\"uiActions\":0}"); return 0; }
             bool activateClaude=args.Length>0 && args[args.Length-1]=="--activate-claude";
             if(activateClaude)Array.Resize(ref args,args.Length-1);
+            int watchPid=0; long watchStart=0;
+            if(args.Length>=3 && args[args.Length-3]=="--watch-target") {
+                watchPid=Int32.Parse(args[args.Length-2]); watchStart=Int64.Parse(args[args.Length-1]);
+                if(watchPid<=0 || watchStart<=0)throw new ArgumentException("Invalid watch target");
+                Array.Resize(ref args,args.Length-3);
+            }
             if(args.Length>=3 && args[args.Length-3]=="--registry") {
                 lifetimeRegistry=Path.GetFullPath(args[args.Length-2]); lifetimeRegistryHash=args[args.Length-1];
                 if(!Regex.IsMatch(lifetimeRegistryHash,@"^[a-f0-9]{64}$"))throw new ArgumentException("Invalid registry hash");
@@ -740,7 +846,7 @@ public static class RuntimeConsoleBridge {
                 Array.Resize(ref args,args.Length-4);
             }
             if(args.Length!=5 && args.Length!=7) { Console.WriteLine("{\"state\":\"InvalidArguments\"}"); return 2; }
-            string state=Apply(args[0],args[1],args[2],args[3],25000,args.Length==7?args[5]:null,args.Length==7?args[6]:null,activateClaude);
+            string state=Apply(args[0],args[1],args[2],args[3],25000,args.Length==7?args[5]:null,args.Length==7?args[6]:null,activateClaude,watchPid,watchStart);
             Emit(state,"");
             return state=="Applied"?0:3;
         } catch(Exception error) {

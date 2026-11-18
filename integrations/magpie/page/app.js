@@ -17,6 +17,7 @@
   const tabs = [...document.querySelectorAll('[role="tab"]')];
   const panels = [...document.querySelectorAll('[role="tabpanel"]')];
   const nativeFocus = Object.hasOwn(HTMLElement.prototype, 'focusGroup');
+  let refreshMaintenance;
   if (nativeFocus) document.querySelector('[role="tablist"]').setAttribute('focusgroup', 'tablist nomemory');
   function selectTab(tab) {
     tabs.forEach((item, index) => {
@@ -26,6 +27,7 @@
       item.toggleAttribute('focusgroupstart', selected);
       if (selected) panels[index].removeAttribute('hidden'); else panels[index].setAttribute('hidden', 'until-found');
     });
+    if (tab === tabs[1]) return refreshMaintenance?.();
   }
   tabs.forEach((tab, index) => {
     tab.addEventListener('click', () => selectTab(tab));
@@ -60,7 +62,7 @@
   }
   history.replaceState(null, '', location.pathname);
   const labels = { source: '应用位置', root: '独立副本', profile: '3p 数据', catalog: '语言资源', caches: '可用缓存' };
-  const names = { check: '检查兼容性', install: '写入语言资源', detect: '检查网关', status: '刷新状态', plan: '查看计划', 'import-cache': '导入语言缓存', prepare: '创建测试副本', switch: '切换资源语言', launch: '启动测试副本', restore: '恢复原始资源' };
+  const names = { install: '写入语言资源', detect: '检查网关', status: '查看资源写入记录', plan: '查看计划', 'import-cache': '导入语言缓存', prepare: '创建测试副本', switch: '切换资源语言', launch: '启动测试副本', restore: '恢复原始资源' };
   const localeNames = { 'zh-Hans': '简体中文', 'zh-Hant': '繁體中文' };
   const select = document.getElementById('locale'), automatic = document.getElementById('runtime-auto');
   const autoState = document.getElementById('auto-state');
@@ -81,7 +83,43 @@
     automatic.checked = state.preferences.runtimeAutoLoad;
     let preferences = { ...state.preferences };
     renderState(false);
-    document.getElementById('mode').textContent = copyMode ? '当前目标：独立测试副本。' : '检查现有 Claude 的资源和兼容性。';
+    const refresh = document.getElementById('refresh-maintenance');
+    const runtimeStatus = document.getElementById('runtime-status');
+    const resourceStatus = document.getElementById('resource-status');
+    const runtimeLabels = {
+      'not-started': '等待准备', preparing: '正在准备语言包', rebuilding: '正在重建语言包',
+      starting: '正在启动监听', watching: '已就绪，等待启动 Claude', disabled: '已停用',
+      'waiting-for-normal-exit': '等待 Claude 正常退出',
+      'source-unverified': '暂时无法确认 Claude 的安装版本，将自动重试',
+      'preparation-failed': '语言包准备失败', 'watcher-start-failed': '监听启动失败',
+      'unsupported-host': '当前环境不支持自动加载', 'owner-changed': '插件配置已变更，请重新打开页面',
+      stopping: '正在停止监听', stopped: '监听已停止'
+    };
+    const resourceLabels = {
+      protected: '不可改写（受保护的安装包）', unsupported: '当前版本不支持改写',
+      eligible: '支持改写，执行前需退出 Claude', disabled: '已禁用写入',
+      copy: '独立副本，可在高级操作中管理', busy: '正在执行其他操作，请稍后刷新',
+      unknown: '暂时无法检查，请稍后刷新'
+    };
+    let checking;
+    refreshMaintenance = () => {
+      if (checking) return checking;
+      refresh.disabled = true;
+      checking = api('/api/maintenance').then(({ runtime, resources }) => {
+        let label = runtimeLabels[runtime?.state] ?? '当前页面未连接运行时监听';
+        if (runtime?.state === 'watching' && runtime.lastResult) {
+          label = runtime.lastResult === 'Applied' ? '上次启动已加载中文' : '上次启动未确认中文已加载，可查看插件状态';
+        }
+        runtimeStatus.textContent = runtime?.message ?? label;
+        resourceStatus.textContent = resourceLabels[resources] ?? resourceLabels.unknown;
+      }).catch(() => {
+        runtimeStatus.textContent = resourceStatus.textContent = '暂时无法读取，请重试';
+      }).finally(() => { checking = undefined; refresh.disabled = false; });
+      return checking;
+    };
+    refresh.disabled = false;
+    refresh.addEventListener('click', refreshMaintenance);
+    if (tabs[1].getAttribute?.('aria-selected') === 'true') void refreshMaintenance();
     const list = document.createElement('dl');
     for (const [key, label] of Object.entries(labels)) {
       if (!copyMode && key === 'root') continue;

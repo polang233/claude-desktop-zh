@@ -14,11 +14,13 @@ param(
   [string]$SetupProfileDirectory,
   [string]$SetupStateDirectory,
   [string]$SetupNodeExecutable,
-  [string]$SetupCliPath
+  [string]$SetupCliPath,
+  [ValidateRange(0,3155378975999999999)][long]$SkipClaudeStartedThrough=0
 )
 $ErrorActionPreference='Stop'
 if ($ApplyOnce -and $Watch) { throw 'Choose ApplyOnce or Watch.' }
 if ($ActivateClaude -and !($ApplyOnce -or $Watch)) { throw 'ActivateClaude requires ApplyOnce or Watch.' }
+if ($SkipClaudeStartedThrough -and (!$Watch -or !$ParentProcessId)) { throw 'Preference changes require a parent-bound watcher.' }
 if (($SetupProfileDirectory -or $SetupStateDirectory -or $SetupNodeExecutable -or $SetupCliPath) -and (!$Watch -or !$SetupProfileDirectory -or !$SetupStateDirectory -or !$SetupNodeExecutable -or !$SetupCliPath)) { throw 'First-launch setup requires a complete CLI/profile binding and Watch.' }
 if (($ParentProcessId -or $ParentExecutable -or $RegistryFile -or $RegistrySha256) -and (!$Watch -or !$ParentProcessId -or !$ParentExecutable -or !$RegistryFile -or $RegistrySha256 -notmatch '^[a-f0-9]{64}$' -or $ParentStartedBefore -eq [datetime]::MinValue)) { throw 'Parent-bound watch requires a complete owner and registry identity.' }
 $repo=Split-Path -Parent $PSScriptRoot
@@ -88,15 +90,16 @@ function Show-SetupNotice([bool]$Ready) {
     if ($script:setupIcon) { $script:setupIcon.Dispose(); $script:setupIcon=$null }
   }
 }
-function Invoke-Adapter {
+function Invoke-Adapter([int]$watchPid=0,[long]$watchStart=0) {
   $adapterArgs=@($bundle.sourceExecutable,$bundle.payload,$bundle.payloadSha256,$bundle.successMarker,'25000')
   if ($bundle.version -eq 2) { $adapterArgs+=@($bundle.catalogFile,$bundle.catalogSha256) }
   if ($ParentProcessId) { $adapterArgs+=@('--parent',$ParentProcessId.ToString(),$parentStartedTicks.ToString(),$ParentExecutable,'--registry',$RegistryFile,$RegistrySha256) }
+  if ($watchPid) { $adapterArgs+=@('--watch-target',$watchPid.ToString(),$watchStart.ToString()) }
   if ($ActivateClaude) { $adapterArgs+=@('--activate-claude') }
   $raw=& $native @adapterArgs
   $result=$raw | ConvertFrom-Json
   $event=@{ time=(Get-Date).ToString('o'); state=$result.state; applicationPid=$result.applicationPid; applicationStartTicks=$result.applicationStartTicks }
-  foreach ($count in @('uiNodes','tabItems','editInputs','consoleLabels','promptValueLength','writtenValueLength','filenameCandidates','openCandidates','observedForegroundPid','promptProcessId','focusedProcessId','pickerForegroundPid','pickerOwnerPid','pickerZeroForegroundSamples','pickerIdentityBits')) {
+  foreach ($count in @('uiNodes','tabItems','editInputs','consoleLabels','promptValueLength','writtenValueLength','filenameCandidates','openCandidates','observedForegroundPid','promptProcessId','focusedProcessId','pickerForegroundPid','pickerOwnerPid','pickerZeroForegroundSamples','pickerIdentityBits','pickerVisibilityWaits')) {
     if ($null -ne $result.$count) { $event[$count]=[int]$result.$count }
   }
   foreach ($field in @('promptReadOnly','promptValueShape','resumedOwnPayload','catalogDialogState','focusStage','foregroundIsDevTools','promptHasFocus','activationRequested','foregroundKind','focusedNameIsPrompt','pickerWindowClass','pickerForegroundKind','scriptSubmitted','errorKind','devToolsOpenMethod')) {
@@ -166,28 +169,36 @@ if ($ApplyOnce) {
       $setupReady=$setup.state -eq 'RuntimeSetupReady'
     }
     $seen=[Collections.Generic.HashSet[string]]::new()
+    $before=0
     if ($ParentProcessId) {
-      $before=(Get-Item -LiteralPath $RegistryFile).LastWriteTimeUtc
-      foreach ($existing in @(Get-Process -Name Claude -ErrorAction SilentlyContinue)) {
-        try { if ($existing.Path -eq $bundle.sourceExecutable -and $existing.StartTime.ToUniversalTime() -lt $before) { [void]$seen.Add(($existing.Id.ToString()+':'+$existing.StartTime.ToUniversalTime().Ticks)) } } catch {}
-      }
+      $before=(Get-Item -LiteralPath $RegistryFile).LastWriteTimeUtc.Ticks
     }
+    if ($SkipClaudeStartedThrough -gt 0) { $report.skipClaudeStartedThrough=$SkipClaudeStartedThrough.ToString() }
     $deadline=if ($ParentProcessId) {[datetime]::MaxValue} else {(Get-Date).AddSeconds($WatchSeconds)}
     Save-Report
     if ($setupReady -and (Test-Owner) -and !(Test-Path -LiteralPath $report.stopFile)) { Write-Output ('Watching original Claude'+$(if ($ParentProcessId) {' while plugin host and options are current.'} else {' for '+$WatchSeconds+' seconds.'})+' Stop file: '+$report.stopFile) }
     while ($setupReady -and (Get-Date) -lt $deadline -and !(Test-Path -LiteralPath $report.stopFile) -and (Test-Owner)) {
       Clear-SetupNotice
-      $candidates=@(Get-Process -Name Claude -ErrorAction SilentlyContinue | Where-Object {
-        try { $_.MainWindowHandle -ne 0 -and $_.Path -eq $bundle.sourceExecutable -and !$seen.Contains(($_.Id.ToString()+':'+$_.StartTime.ToUniversalTime().Ticks)) } catch { $false }
+      $candidates=@(Get-Process -Name Claude -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+          if ($_.MainWindowHandle -eq 0 -or $_.Path -ne $bundle.sourceExecutable) { return }
+          $ticks=$_.StartTime.ToUniversalTime().Ticks
+          $key=$_.Id.ToString()+':'+$ticks
+          if ($ticks -ge $before -and $ticks -gt $SkipClaudeStartedThrough -and !$seen.Contains($key)) {
+            @{ pid=$_.Id; ticks=$ticks; key=$key }
+          }
+        } catch { }
       })
-      if ($candidates.Count -gt 0) {
-        $result=Invoke-Adapter
+      if ($candidates.Count -eq 1) {
+        $candidate=$candidates[0]
+        if ((Test-Path -LiteralPath $report.stopFile) -or !(Test-Owner)) { break }
+        $result=Invoke-Adapter $candidate.pid $candidate.ticks
         if ($result.applicationPid -and ($result.scriptSubmitted -or $result.state -notin @('DeferredNoForegroundClaude','FocusChanged','ApplicationExited'))) {
           [void]$seen.Add(($result.applicationPid.ToString()+':'+$result.applicationStartTicks))
           Write-Output ($result | ConvertTo-Json -Compress)
         }
         elseif ($result.state -eq 'AdapterError') {
-          foreach ($candidate in $candidates) { [void]$seen.Add(($candidate.Id.ToString()+':'+$candidate.StartTime.ToUniversalTime().Ticks)) }
+          [void]$seen.Add($candidate.key)
           Write-Output ($result | ConvertTo-Json -Compress)
         }
       }
