@@ -75,7 +75,13 @@ test('registry accepts root, npm and GitHub installs and rejects ambiguous or un
 
 test('default locale starts one hidden owner-bound watcher and stop uses a file', async t => {
   const f = fixture(t), calls = [], child = fakeChild(), toasts = [];
-  const controller = runtimeController(f);
+  const controller = runtimeController(f, {
+    prepareRuntime: async (output, source, cache) => {
+      assert.equal(cache, path.join(f.root, 'runtime', 'catalog-cache'));
+      assert.equal(source, binding(f.root, 'Claude-old').source);
+      return { automationManifest: output + '.automation.json', profileDirectory: path.join(f.root, 'profile') };
+    }
+  });
   const runtime = createRuntimeHost({ directory: f.root, client: { tui: { showToast: async value => toasts.push(value.body.message) } } }, f.options, controller, {
     platform: 'win32', runtimeDirectory: path.join(f.root, 'runtime'),
     spawn: (...args) => { calls.push(args); return child; }
@@ -96,6 +102,13 @@ test('default locale starts one hidden owner-bound watcher and stop uses a file'
   assert.deepEqual(settings.stdio, ['ignore', 'pipe', 'pipe']);
   child.stdout.write('Watching original Claude while plugin host and options are current.\n');
   assert.equal(runtime.state().locale, 'zh-Hans'); assert.equal(runtime.state().automaticNextLaunch, true);
+  child.stdout.write('{"state":"LoadingLanguage","applicationPid":42}\n');
+  assert.equal(runtime.state().progress, 'loading');
+  child.stdout.write('{"state":"WaitingForClaude","applicationPid":42}\n');
+  assert.equal(runtime.state().progress, undefined);
+  child.stdout.write('{"state":"LoadingLanguage","applicationPid":42}\n{"state":"Applied","applicationPid":42}\n');
+  assert.equal(runtime.state().progress, undefined);
+  assert.equal(runtime.state().lastResult, 'Applied');
   assert.equal(toasts.length, 2); assert.match(toasts[0], /退出/); assert.match(toasts[1], /已准备好/);
   runtime.stop();
   assert.equal(fs.existsSync(args[args.indexOf('-StopFile') + 1]), true);
@@ -117,6 +130,23 @@ test('an options change during catalog preparation prevents an obsolete watcher'
   assert.equal(spawned, false); assert.equal(runtime.state().state, 'owner-changed');
 });
 
+test('a preference saved by another host revokes the old watcher even with the same registry', async t => {
+  const f = fixture(t), child = fakeChild(), preferenceFile = path.join(f.root, 'language-preferences.json');
+  let args;
+  const runtime = createRuntimeHost({ directory: f.root }, {}, runtimeController(f), {
+    platform: 'win32', preferenceFile, runtimeDirectory: path.join(f.root, 'runtime'), pollIntervalMs: 5,
+    spawn: (_, values) => { args = values; return child; }
+  });
+  try {
+    await runtime.start();
+    assert.equal(args[args.indexOf('-PreferenceHash') + 1], 'missing');
+    assert.equal(args[args.indexOf('-PreferenceFile') + 1], preferenceFile);
+    fs.writeFileSync(preferenceFile, '{"method":"in-place"}');
+    await until(() => fs.existsSync(args[args.indexOf('-StopFile') + 1]));
+    assert.equal(runtime.state().state, 'owner-changed');
+  } finally { child.emit('exit', 0); await runtime.stopped(); }
+});
+
 test('settings restart waits for the old watcher to exit through its stop file', async t => {
   const f = fixture(t), child = fakeChild();
   const runtime = createRuntimeHost({ directory: f.root }, {}, runtimeController(f), {
@@ -130,6 +160,7 @@ test('settings restart waits for the old watcher to exit through its stop file',
   child.emit('exit', 0);
   await waiting;
   assert.equal(runtime.state().state, 'stopped');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, 'runtime', run, 'status.json'))).released, true);
 
   const replacementChild = fakeChild();
   const skipClaudeStartedThrough = '639305767399865988';
@@ -256,9 +287,10 @@ test('runtime controller uses the CLI and only imports after a missing-catalog r
     if (args[0] === 'runtime-export' && exports++ === 0) throw new Error('Missing compatible zh-Hans base/dynamic catalogs.');
     return { automationManifest: 'manifest' };
   });
-  await controller.prepareRuntime('new.js');
+  await controller.prepareRuntime('new.js', 'original', 'catalog-cache');
   assert.deepEqual(calls.map(x => x[0]), ['detect-3p', 'runtime-export', 'catalog', 'runtime-export']);
   assert(calls[1].includes('zh-Hans')); assert(calls[1].includes('original')); assert(calls[1].includes('new.js'));
+  assert.deepEqual(calls[1].slice(-2), ['--runtime-cache', 'catalog-cache']);
   const refused = [];
   const drift = createController({ projectDirectory: project }, async (_config, args) => {
     refused.push(args[0]);

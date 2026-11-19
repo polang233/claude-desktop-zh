@@ -1,21 +1,45 @@
 <!doctype html>
 <html lang="zh-Hans">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Claude 中文</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css"><script src="app.js?v=maintenance-status-1" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>Claude 中文</title><link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css?v=methods-1"><script src="app.js?v=methods-1" defer></script></head>
 <body><main class="workspace">
-<header class="identity"><img src="icon.png" width="144" height="144" alt="" fetchpriority="high"><h1>Claude 中文</h1></header>
+<header class="identity">
+  <img class="mascot" src="icon.png" width="256" height="256" alt="" fetchpriority="high">
+  <div class="identity-title">
+    <h1>Claude 中文</h1>
+    <p id="plugin-version" class="version" hidden></p>
+  </div>
+  <nav class="project-links" aria-label="项目和作者">
+    <a id="repository-link" class="project-link" href="https://github.com/polang233/claude-desktop-zh" target="_blank" rel="noreferrer noopener">
+      <svg width="24" height="24" viewBox="-2 -2 20 20" fill="currentColor" aria-hidden="true">
+        <path d="M6.766 11.695C4.703 11.437 3.25 9.904 3.25 7.92c0-.806.281-1.677.75-2.258-.203-.532-.172-1.662.062-2.129.626-.081 1.469.258 1.969.726.594-.194 1.219-.291 1.985-.291.765 0 1.39.097 1.953.274.484-.451 1.343-.79 1.969-.709.218.435.25 1.564.046 2.113.5.613.766 1.436.766 2.274 0 1.984-1.453 3.485-3.547 3.759.531.355.891 1.129.891 2.016v1.678c0 .484.39.758.859.564C13.781 14.824 16 11.905 16 8.291 16 3.726 12.406 0 7.984 0 3.562 0 0 3.726 0 8.291c0 3.581 2.203 6.55 5.172 7.663A.595.595 0 0 0 6 15.389v-1.291c-.219.097-.5.162-.75.162-1.031 0-1.641-.581-2.078-1.662-.172-.435-.36-.693-.719-.742-.187-.016-.25-.097-.25-.193 0-.194.313-.339.625-.339.453 0 .844.29 1.25.887.313.468.641.678 1.031.678.391 0 .641-.146 1-.516.266-.275.469-.517.657-.678Z"/>
+      </svg>
+      <span>claude-desktop-zh</span><span class="external-arrow" aria-hidden="true">↗</span>
+    </a>
+    <a id="author-link" class="project-link" href="https://github.com/polang233" target="_blank" rel="noreferrer noopener"><img class="author-avatar" src="author-avatar.jpg" width="24" height="24" alt=""><span>看看他还做了什么</span><span class="external-arrow" aria-hidden="true">↗</span></a>
+    <p id="project-link-status" class="project-link-status" role="status"></p>
+  </nav>
+</header>
 <div class="content">
 <div class="tabs" role="tablist" aria-label="插件功能"><button id="settings-tab" type="button" role="tab" aria-selected="true" tabindex="0">语言设置</button><button id="maintenance-tab" type="button" role="tab" aria-selected="false" tabindex="-1">资源维护</button></div>
 <section id="settings-panel" role="tabpanel" aria-labelledby="settings-tab"><div class="panel-body">
-<p class="description">在 Claude 的第三方 Gateway 模式中使用官方中文界面，保留原设置和会话。需保持喜鹊运行；更改在下次启动 Claude 时生效。停用不改变当前窗口的语言。</p>
+<p class="description">在 Claude 的第三方 Gateway 模式中使用官方中文界面，保留原设置和会话。从原来的入口打开 Claude 即可。</p>
 <form id="preferences-form"><label class="field" for="locale"><span>语言</span><select id="locale" disabled><option value="zh-Hans">简体中文</option><option value="zh-Hant">繁體中文</option></select></label>
-<div class="toggle-row"><label for="runtime-auto">启动时自动中文</label><div class="switch-control"><span id="auto-state">正在连接</span><input id="runtime-auto" type="checkbox" role="switch" aria-label="启动时自动中文" checked disabled></div></div>
+<label id="method-row" class="field" for="method"><span>汉化方式</span><select id="method" aria-describedby="method-note" disabled><option value="runtime">启动时加载</option><option id="in-place-option" value="in-place" disabled>原位应用</option></select></label>
+<p id="method-note" class="method-note">正在检查安装资源…</p>
+<div id="auto-row" class="toggle-row"><label for="runtime-auto">启动时自动中文</label><div class="switch-control"><span id="auto-state">正在连接</span><input id="runtime-auto" type="checkbox" role="switch" aria-label="启动时自动中文" checked disabled></div></div>
+<div id="resource-actions" class="actions" hidden><button type="button" data-action="install" data-mode="original" data-write="true" disabled>应用所选语言</button><button type="button" data-action="restore" data-mode="original" data-write="true" disabled>恢复原始资源</button></div>
+<p id="live-stage" class="stage" role="status" aria-atomic="true">正在读取加载状态…</p>
 <p id="status" role="status" aria-live="polite">正在连接插件…</p></form>
-<details class="usage-note"><summary>启动与退出说明</summary><p>通过 Claude 的「文件 → 退出」正常退出。准备完成后，从原入口打开。加载时会短暂出现调试窗口和文件选择框，完成后自动收起。</p></details></div></section>
+</div></section>
 <section id="maintenance-panel" role="tabpanel" aria-labelledby="maintenance-tab" hidden="until-found"><div class="panel-body"><h2>语言资源与应用状态</h2>
 <div role="status"><dl class="maintenance-status">
 <dt>运行时加载</dt><dd id="runtime-status">待检查</dd>
 <dt>安装资源改写</dt><dd id="resource-status">待检查</dd>
 </dl></div>
 <div class="actions"><button type="button" id="refresh-maintenance" disabled>刷新状态</button><button type="button" data-action="import-cache" data-write="true" disabled>导入语言缓存</button></div>
-<details class="paths"><summary>查看应用与资源位置</summary><div id="paths"></div></details><details class="advanced"><summary>高级操作</summary><p class="muted">写入资源仅适用于旧版未打包目录。</p><div class="actions"><button type="button" data-action="status" disabled>查看资源写入记录</button><button type="button" data-action="install" data-mode="original" data-write="true" disabled>写入语言资源</button><button type="button" data-action="switch" data-write="true" disabled>切换旧版资源语言</button><button type="button" data-action="restore" data-write="true" disabled>恢复旧版资源</button><button type="button" data-action="plan" disabled>查看计划</button><button type="button" data-action="detect" disabled>检查网关</button><button type="button" data-action="prepare" data-mode="copy" data-write="true" disabled>创建测试副本</button><button type="button" data-action="launch" data-mode="copy" disabled>启动测试副本</button></div><p id="guard" class="muted">写入或启动前会再次确认，请先正常退出目标应用。</p></details><div class="result"><h3>操作结果</h3><pre id="log" role="status" aria-live="polite">还没有操作。</pre></div></div></section>
-</div></main></body></html>
+<details class="paths"><summary>查看应用与资源位置</summary><div id="paths"></div></details><details class="advanced"><summary>高级操作</summary><p class="muted">原位应用与恢复在「语言设置」中操作。</p><div class="actions"><button type="button" data-action="status" disabled>查看资源写入记录</button><button type="button" data-mode="copy" data-action="switch" data-write="true" disabled>切换旧版资源语言</button><button type="button" data-mode="copy" data-action="restore" data-write="true" disabled>恢复副本资源</button><button type="button" data-action="plan" disabled>查看计划</button><button type="button" data-action="detect" disabled>检查网关</button><button type="button" data-action="prepare" data-mode="copy" data-write="true" disabled>创建测试副本</button><button type="button" data-action="launch" data-mode="copy" disabled>启动测试副本</button></div><p id="guard" class="muted">写入或启动前会再次确认，请先正常退出目标应用。</p></details><div class="result"><h3>操作结果</h3><pre id="log" role="status" aria-live="polite">还没有操作。</pre></div></div></section>
+</div></main>
+<dialog id="confirm-action" aria-labelledby="confirm-title" aria-describedby="confirm-details">
+<h2 id="confirm-title">确认操作</h2><p id="confirm-details"></p>
+<div class="actions"><button type="button" id="confirm-cancel" autofocus>取消</button><button type="button" id="confirm-accept">确认</button></div>
+</dialog></body></html>

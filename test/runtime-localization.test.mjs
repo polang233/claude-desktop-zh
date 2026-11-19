@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { webcrypto } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { saveCatalog } from '../lib/catalogs.mjs';
 import { sha256 } from '../lib/common.mjs';
 import { activateRuntimeCatalog, buildRuntimeLocalization, runtimeAutomationSource, runtimePickerAutomationSource } from '../scripts/build-runtime-localization.mjs';
@@ -28,6 +31,44 @@ function fixture(t) {
   saveCatalog(catalogs, 'zh-Hans', 'dynamic', Buffer.from('{"hello":"你好"}'), { source: 'fixture' });
   return { root, source, catalogs, assets, runtime };
 }
+
+test('independent CLI hosts share one catalog build and keep their own acknowledgements and pinned files', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.source, 'Claude.exe'), 'fixture');
+  const cache = path.join(f.root, 'catalog-cache');
+  const cli = fileURLToPath(new URL('../bin/claude-3p-zh.mjs', import.meta.url));
+  const run = async name => {
+    const output = path.join(f.root, name + '.js');
+    const args = [cli, 'runtime-export', '--source', f.source, '--catalog-dir', f.catalogs,
+      '--locale', 'zh-Hans', '--output', output, '--runtime-cache', cache];
+    const { stdout } = await promisify(execFile)(process.execPath, args, { windowsHide: true });
+    const result = JSON.parse(stdout);
+    return { ...result, manifest: JSON.parse(fs.readFileSync(result.automationManifest)) };
+  };
+  const hosts = await Promise.all(['first', 'second', 'third', 'fourth'].map(run));
+  assert.equal(hosts.filter(host => !host.reused).length, 1);
+  assert.equal(new Set(hosts.map(host => host.manifest.successMarker)).size, 4);
+  const specs = hosts.map(host => host.manifest.catalogFile);
+  assert.equal(new Set(specs).size, 4);
+  const firstData = fs.readFileSync(specs[0]);
+  const digest = sha256(firstData);
+  for (const { manifest } of hosts) {
+    assert.equal(manifest.catalogSha256, digest);
+    assert.equal(sha256(fs.readFileSync(manifest.payload)), manifest.payloadSha256);
+  }
+  assert.equal(fs.existsSync(path.join(f.root, 'first.js')), false);
+  fs.appendFileSync(path.join(f.assets, 'runtime.js'), '/* update */');
+  const updated = await run('update');
+  assert.equal(updated.reused, false);
+  assert.notEqual(updated.manifest.catalogSha256, digest);
+  assert.deepEqual(fs.readFileSync(specs[0]), firstData);
+  fs.writeFileSync(path.join(cache, 'zh-Hans', 'catalog.json'), 'corrupt');
+  assert.equal((await run('repair')).reused, false);
+  saveCatalog(f.catalogs, 'zh-Hans', 'dynamic', Buffer.from('{"hello":"中文"}'), { source: 'fixture' });
+  assert.equal((await run('new-catalog')).reused, false);
+  assert.equal((await run('next')).reused, true);
+  assert.deepEqual(fs.readdirSync(path.join(cache, 'zh-Hans')).sort(), ['catalog.json', 'index.json']);
+});
 
 test('90% compatible official messages are accepted, and missing or incompatible messages keep English', t => {
   for (const matched of [1079, 1080, 1081]) {
@@ -158,9 +199,11 @@ test('small automation picker validates data before acknowledging and refuses ch
   const source=runtimePickerAutomationSource('zh-Hans',sha256(data),marker);
   const messages=[],errors=[];
   let cancelled=false,changed=false,opened=0;
-  const context={location:{protocol:'app:',host:'localhost'},crypto:webcrypto,TextDecoder,
+  const receipts=[];
+  const context={location:{protocol:'app:',host:'localhost'},crypto:webcrypto,TextDecoder,setTimeout:()=>{},
     console:{info:value=>messages.push(value),error:(...values)=>errors.push(values)},
-    document:{createElement:tag=>{
+    document:{body:{append:node=>receipts.push(node)},createElement:tag=>{
+      if(tag==='output')return {style:{}};
       assert.equal(tag,'input');
       const input={files:[{arrayBuffer:async()=>Uint8Array.from(changed?Buffer.from('changed'):data).buffer}],
         click:()=>{opened++;queueMicrotask(()=>cancelled?input.oncancel():input.onchange());}};
@@ -169,6 +212,8 @@ test('small automation picker validates data before acknowledging and refuses ch
     claudeChineseRuntime:{locale:'zh-Hans',status:()=>({messagesLocale:'zh-Hans',catalogRequestsServed:2,restored:false})}};
   await vm.runInNewContext(source,context);
   assert.deepEqual(messages,[marker]);
+  assert.equal(receipts[0].id,marker);
+  assert.equal(receipts[0].textContent,'简体中文已加载');
   changed=true;
   await vm.runInNewContext(source,context);
   assert.equal(errors.at(-1)[1],'Catalog file changed.');
@@ -176,6 +221,7 @@ test('small automation picker validates data before acknowledging and refuses ch
   await vm.runInNewContext(source,context);
   assert.equal(errors.at(-1)[1],'Cancelled.');
   assert.equal(messages.length,1);
+  assert.equal(receipts.length,1);
   assert.equal(opened,3);
   context.location.host='example.test';
   await vm.runInNewContext(source,context);
@@ -188,6 +234,38 @@ test('small automation picker validates data before acknowledging and refuses ch
   await vm.runInNewContext(source,context);
   assert.equal(errors.at(-1)[1],'Claude changed since this snippet was built. Build it again.');
   assert.equal(context.claudeChineseRuntime,undefined);
+});
+
+test('setup renderer acknowledges the localized heading and search control from its own frontend catalog', async () => {
+  const marker = 'CLAUDE_ZH_APPLIED_' + 'c'.repeat(32);
+  async function openWindow(heading, search, base) {
+    const bytes = Buffer.from(JSON.stringify({ locale: 'zh-Hans', base }));
+    const messages = [], errors = [], receipts = [];
+    let time = 0;
+    const context = {
+      location: {protocol: 'app:', host: 'localhost', pathname: '/setup-desktop-3p'},
+      crypto: webcrypto, TextDecoder, Date: {now: () => time},
+      setTimeout(callback, delay) { if (delay === 100) { time += 5000; queueMicrotask(callback); } },
+      console: {info: value => messages.push(value), error: (_, value) => errors.push(value)},
+      claudeChineseRuntime: {locale: 'zh-Hans', status: () => ({messagesLocale: 'zh-Hans', catalogRequestsServed: 2})},
+      document: {
+        querySelector: selector => selector === 'header' ? {textContent: heading} : null,
+        querySelectorAll: selector => selector === 'input' ? [{getAttribute: () => search}] : [],
+        body: {append: node => receipts.push(node)},
+        createElement(tag) {
+          if (tag === 'output') return {style: {}};
+          return {files: [{arrayBuffer: async () => Uint8Array.from(bytes).buffer}], click() { this.onchange(); }};
+        }
+      }
+    };
+    await vm.runInNewContext(runtimePickerAutomationSource('zh-Hans', sha256(bytes), marker), context);
+    return { messages, errors, receipts: receipts.map(node => node.id) };
+  }
+  const base = {on79ZcGd72: '配置第三方推理', pyTWlkS60A: '搜索设置'};
+  assert.deepEqual(await openWindow('配置第三方推理', '搜索设置', base), {messages: [marker], errors: [], receipts: [marker]});
+  assert.deepEqual((await openWindow('配置第三方推理', 'Search settings', base)).receipts, []);
+  assert.deepEqual((await openWindow('Configure third-party inference', '搜索设置', base)).receipts, []);
+  assert.match((await openWindow('配置第三方推理', '搜索设置', {})).errors[0], /Settings messages missing/);
 });
 
 test('automation payload acknowledges an active matching language and refuses another active locale', async () => {

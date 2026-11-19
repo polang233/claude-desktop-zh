@@ -10,6 +10,8 @@ param(
   [datetime]$ParentStartedBefore,
   [string]$RegistryFile,
   [string]$RegistrySha256,
+  [string]$PreferenceFile,
+  [string]$PreferenceHash,
   [string]$StopFile,
   [string]$SetupProfileDirectory,
   [string]$SetupStateDirectory,
@@ -21,6 +23,7 @@ $ErrorActionPreference='Stop'
 if ($ApplyOnce -and $Watch) { throw 'Choose ApplyOnce or Watch.' }
 if ($ActivateClaude -and !($ApplyOnce -or $Watch)) { throw 'ActivateClaude requires ApplyOnce or Watch.' }
 if ($SkipClaudeStartedThrough -and (!$Watch -or !$ParentProcessId)) { throw 'Preference changes require a parent-bound watcher.' }
+if (($PreferenceFile -or $PreferenceHash) -and (!$Watch -or !$ParentProcessId -or !$PreferenceFile -or $PreferenceHash -notmatch '^(missing|[a-f0-9]{64})$')) { throw 'Invalid preference binding.' }
 if (($SetupProfileDirectory -or $SetupStateDirectory -or $SetupNodeExecutable -or $SetupCliPath) -and (!$Watch -or !$SetupProfileDirectory -or !$SetupStateDirectory -or !$SetupNodeExecutable -or !$SetupCliPath)) { throw 'First-launch setup requires a complete CLI/profile binding and Watch.' }
 if (($ParentProcessId -or $ParentExecutable -or $RegistryFile -or $RegistrySha256) -and (!$Watch -or !$ParentProcessId -or !$ParentExecutable -or !$RegistryFile -or $RegistrySha256 -notmatch '^[a-f0-9]{64}$' -or $ParentStartedBefore -eq [datetime]::MinValue)) { throw 'Parent-bound watch requires a complete owner and registry identity.' }
 $repo=Split-Path -Parent $PSScriptRoot
@@ -44,90 +47,99 @@ if ($ParentProcessId) {
 function Test-Owner {
   if (!$ParentProcessId) { return $true }
   try {
+    if ($PreferenceFile) {
+      $hash=if (Test-Path -LiteralPath $PreferenceFile) { Get-RuntimeHash $PreferenceFile } else { 'missing' }
+      if ($hash -ne $PreferenceHash) { return $false }
+    }
     $parent=Get-Process -Id $ParentProcessId -ErrorAction Stop
     return $parent.StartTime.ToUniversalTime().Ticks -eq $parentStartedTicks -and [string]::Equals([IO.Path]::GetFullPath($parent.Path),[IO.Path]::GetFullPath($ParentExecutable),[StringComparison]::OrdinalIgnoreCase) -and (Get-RuntimeHash $RegistryFile) -eq $RegistrySha256
   } catch { return $false }
 }
 if (!(Test-Owner)) { throw 'Plugin options changed before watcher startup.' }
-if (!$BuildDirectory) { $BuildDirectory=Join-Path $repo '.handoff/runtime-console-bridge' }
-[void][IO.Directory]::CreateDirectory($BuildDirectory)
-$buildRun=Join-Path $BuildDirectory ([guid]::NewGuid().ToString('N'))
-[void][IO.Directory]::CreateDirectory($buildRun)
-$source=Join-Path $buildRun 'RuntimeConsoleBridge.cs'
-[IO.File]::WriteAllBytes($source,[IO.File]::ReadAllBytes((Join-Path $repo 'integrations/windows-runtime/RuntimeConsoleBridge.cs')))
-$compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
-$gac=Join-Path $env:WINDIR 'Microsoft.NET/assembly/GAC_MSIL'
-$references=@('UIAutomationClient','UIAutomationTypes','WindowsBase') | ForEach-Object {
-  $found=@([IO.Directory]::GetFiles((Join-Path $gac $_),($_.ToString()+'.dll'),[IO.SearchOption]::AllDirectories))
-  if ($found.Count -ne 1) { throw 'Windows UI Automation reference is missing or ambiguous.' }
-  '/reference:'+$found[0]
-}
-$native=Join-Path $buildRun 'RuntimeConsoleBridge.exe'
-& $compiler /nologo /target:exe /platform:x64 /codepage:65001 ('/out:'+$native) @references $source
-if ($LASTEXITCODE -ne 0) { throw 'Runtime console adapter compilation failed.' }
-$selfTest=(& $native --self-test $PID | ConvertFrom-Json)
-if ($LASTEXITCODE -ne 0 -or $selfTest.state -ne 'SelfTestPassed') { throw 'Runtime adapter self-test failed.' }
-$report=@{ startedAt=(Get-Date).ToString('o'); compiled=$true; adapterSourceSha256=(Get-RuntimeHash $source); selfTest=$selfTest; mode='BuildOnly'; events=@(); stopFile=$(if ($StopFile) {[IO.Path]::GetFullPath($StopFile)} else {Join-Path $buildRun 'stop'}); parentBound=[bool]$ParentProcessId }
-$reportFile=Join-Path $buildRun 'result.json'
-function Save-Report { $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportFile -Encoding UTF8 }
-function Clear-SetupNotice {
-  if ($script:setupIcon -and (Get-Date) -ge $script:setupNoticeUntil) { $script:setupIcon.Dispose(); $script:setupIcon=$null }
-}
-function Show-SetupNotice([bool]$Ready) {
-  try {
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-    if ($script:setupIcon) { $script:setupIcon.Dispose() }
-    $script:setupIcon=New-Object System.Windows.Forms.NotifyIcon
-    $script:setupIcon.Icon=[System.Drawing.SystemIcons]::Information
-    $script:setupIcon.BalloonTipTitle=('"Claude \u4e2d\u6587"' | ConvertFrom-Json)
-    $script:setupIcon.Text=$script:setupIcon.BalloonTipTitle
-    $script:setupIcon.BalloonTipText=if ($Ready) { ('"\u4e2d\u6587\u5df2\u51c6\u5907\u597d\uff0c\u4ece\u539f\u6765\u7684\u5165\u53e3\u6253\u5f00 Claude \u5373\u53ef\u3002"' | ConvertFrom-Json) } else { ('"\u8bf7\u901a\u8fc7 Claude \u7684\u201c\u6587\u4ef6 \u2192 \u9000\u51fa\u201d\u6b63\u5e38\u9000\u51fa\uff0c\u7b49\u5f85\u4e2d\u6587\u51c6\u5907\u5b8c\u6210\u3002"' | ConvertFrom-Json) }
-    $script:setupIcon.Visible=$true
-    $script:setupIcon.ShowBalloonTip(6000)
-    $script:setupNoticeUntil=(Get-Date).AddSeconds(8)
-  } catch { # Notifications are optional; never change Windows notification settings.
-    if ($script:setupIcon) { $script:setupIcon.Dispose(); $script:setupIcon=$null }
-  }
-}
-function Invoke-Adapter([int]$watchPid=0,[long]$watchStart=0) {
-  $adapterArgs=@($bundle.sourceExecutable,$bundle.payload,$bundle.payloadSha256,$bundle.successMarker,'25000')
-  if ($bundle.version -eq 2) { $adapterArgs+=@($bundle.catalogFile,$bundle.catalogSha256) }
-  if ($ParentProcessId) { $adapterArgs+=@('--parent',$ParentProcessId.ToString(),$parentStartedTicks.ToString(),$ParentExecutable,'--registry',$RegistryFile,$RegistrySha256) }
-  if ($watchPid) { $adapterArgs+=@('--watch-target',$watchPid.ToString(),$watchStart.ToString()) }
-  if ($ActivateClaude) { $adapterArgs+=@('--activate-claude') }
-  $raw=& $native @adapterArgs
-  $result=$raw | ConvertFrom-Json
-  $event=@{ time=(Get-Date).ToString('o'); state=$result.state; applicationPid=$result.applicationPid; applicationStartTicks=$result.applicationStartTicks }
-  foreach ($count in @('uiNodes','tabItems','editInputs','consoleLabels','promptValueLength','writtenValueLength','filenameCandidates','openCandidates','observedForegroundPid','promptProcessId','focusedProcessId','pickerForegroundPid','pickerOwnerPid','pickerZeroForegroundSamples','pickerIdentityBits','pickerVisibilityWaits')) {
-    if ($null -ne $result.$count) { $event[$count]=[int]$result.$count }
-  }
-  foreach ($field in @('promptReadOnly','promptValueShape','resumedOwnPayload','catalogDialogState','focusStage','foregroundIsDevTools','promptHasFocus','activationRequested','foregroundKind','focusedNameIsPrompt','pickerWindowClass','pickerForegroundKind','scriptSubmitted','errorKind','devToolsOpenMethod')) {
-    if ($null -ne $result.$field) { $event[$field]=$result.$field }
-  }
-  $report.events+=@($event)
-  Save-Report
-  return $result
-}
-if ($ApplyOnce) {
-  $report.mode='ApplyOnce'
-  $result=Invoke-Adapter
-  Write-Output ($result | ConvertTo-Json -Compress)
-} elseif ($Watch) {
-  $report.mode='Watch'
-  # One explicit bounded experiment; no startup registration or background persistence.
-  $identity=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-  $sha=[Security.Cryptography.SHA256]::Create()
-  try { $name=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity+'|'+$bundle.sourceExecutable.ToLowerInvariant()))).Replace('-','') }
-  finally { $sha.Dispose() }
-  $mutex=[Threading.Mutex]::new($false,('Local\Claude3pZhRuntime-'+$name))
-  $owned=$false
-  try {
+$mutex=$null
+$owned=$false
+try {
+  if ($Watch) {
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sha=[Security.Cryptography.SHA256]::Create()
+    try { $name=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($identity+'|'+$bundle.sourceExecutable.ToLowerInvariant()))).Replace('-','') }
+    finally { $sha.Dispose() }
+    $mutex=[Threading.Mutex]::new($false,('Local\Claude3pZhRuntime-'+$name))
     $lockDeadline=(Get-Date).AddSeconds(6)
     do {
       try { $owned=$mutex.WaitOne(100) } catch [Threading.AbandonedMutexException] { $owned=$true }
     } while (!$owned -and $ParentProcessId -and (Test-Owner) -and (Get-Date) -lt $lockDeadline)
     if (!$owned) { throw 'A runtime localization watcher already owns this application.' }
+    if (!(Test-Owner)) { throw 'Plugin options changed before adapter compilation.' }
+  }
+  if (!$BuildDirectory) { $BuildDirectory=Join-Path $repo '.handoff/runtime-console-bridge' }
+  [void][IO.Directory]::CreateDirectory($BuildDirectory)
+  $buildRun=Join-Path $BuildDirectory ([guid]::NewGuid().ToString('N'))
+  [void][IO.Directory]::CreateDirectory($buildRun)
+  $source=Join-Path $buildRun 'RuntimeConsoleBridge.cs'
+  [IO.File]::WriteAllBytes($source,[IO.File]::ReadAllBytes((Join-Path $repo 'integrations/windows-runtime/RuntimeConsoleBridge.cs')))
+  $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+  $gac=Join-Path $env:WINDIR 'Microsoft.NET/assembly/GAC_MSIL'
+  $references=@('UIAutomationClient','UIAutomationTypes','WindowsBase') | ForEach-Object {
+    $found=@([IO.Directory]::GetFiles((Join-Path $gac $_),($_.ToString()+'.dll'),[IO.SearchOption]::AllDirectories))
+    if ($found.Count -ne 1) { throw 'Windows UI Automation reference is missing or ambiguous.' }
+    '/reference:'+$found[0]
+  }
+  $native=Join-Path $buildRun 'RuntimeConsoleBridge.exe'
+  & $compiler /nologo /target:exe /platform:x64 /codepage:65001 ('/out:'+$native) @references $source
+  if ($LASTEXITCODE -ne 0) { throw 'Runtime console adapter compilation failed.' }
+  $selfTest=(& $native --self-test $PID | ConvertFrom-Json)
+  if ($LASTEXITCODE -ne 0 -or $selfTest.state -ne 'SelfTestPassed') { throw 'Runtime adapter self-test failed.' }
+  $report=@{ startedAt=(Get-Date).ToString('o'); compiled=$true; adapterSourceSha256=(Get-RuntimeHash $source); selfTest=$selfTest; mode='BuildOnly'; events=@(); stopFile=$(if ($StopFile) {[IO.Path]::GetFullPath($StopFile)} else {Join-Path $buildRun 'stop'}); parentBound=[bool]$ParentProcessId }
+  $reportFile=Join-Path $buildRun 'result.json'
+  function Save-Report { $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportFile -Encoding UTF8 }
+  function Clear-SetupNotice {
+    if ($script:setupIcon -and (Get-Date) -ge $script:setupNoticeUntil) { $script:setupIcon.Dispose(); $script:setupIcon=$null }
+  }
+  function Show-SetupNotice([bool]$Ready) {
+    try {
+      Add-Type -AssemblyName System.Windows.Forms
+      Add-Type -AssemblyName System.Drawing
+      if ($script:setupIcon) { $script:setupIcon.Dispose() }
+      $script:setupIcon=New-Object System.Windows.Forms.NotifyIcon
+      $script:setupIcon.Icon=[System.Drawing.SystemIcons]::Information
+      $script:setupIcon.BalloonTipTitle=('"Claude \u4e2d\u6587"' | ConvertFrom-Json)
+      $script:setupIcon.Text=$script:setupIcon.BalloonTipTitle
+      $script:setupIcon.BalloonTipText=if ($Ready) { ('"\u4e2d\u6587\u5df2\u51c6\u5907\u597d\uff0c\u4ece\u539f\u6765\u7684\u5165\u53e3\u6253\u5f00 Claude \u5373\u53ef\u3002"' | ConvertFrom-Json) } else { ('"\u8bf7\u901a\u8fc7 Claude \u7684\u201c\u6587\u4ef6 \u2192 \u9000\u51fa\u201d\u6b63\u5e38\u9000\u51fa\uff0c\u7b49\u5f85\u4e2d\u6587\u51c6\u5907\u5b8c\u6210\u3002"' | ConvertFrom-Json) }
+      $script:setupIcon.Visible=$true
+      $script:setupIcon.ShowBalloonTip(6000)
+      $script:setupNoticeUntil=(Get-Date).AddSeconds(8)
+    } catch { # Notifications are optional; never change Windows notification settings.
+      if ($script:setupIcon) { $script:setupIcon.Dispose(); $script:setupIcon=$null }
+    }
+  }
+  function Invoke-Adapter([int]$watchPid=0,[long]$watchStart=0,[long]$window=0,[string]$kind) {
+    $adapterArgs=@($bundle.sourceExecutable,$bundle.payload,$bundle.payloadSha256,$bundle.successMarker,'25000')
+    if ($bundle.version -eq 2) { $adapterArgs+=@($bundle.catalogFile,$bundle.catalogSha256) }
+    if ($ParentProcessId) { $adapterArgs+=@('--parent',$ParentProcessId.ToString(),$parentStartedTicks.ToString(),$ParentExecutable,'--registry',$RegistryFile,$RegistrySha256) }
+    if ($watchPid) { $adapterArgs+=@('--watch-target',$watchPid.ToString(),$watchStart.ToString()) }
+    if ($window) { $adapterArgs+=@('--watch-window',$window.ToString(),$kind) }
+    if ($ActivateClaude) { $adapterArgs+=@('--activate-claude') }
+    $raw=& $native @adapterArgs
+    $result=$raw | ConvertFrom-Json
+    $event=@{ time=(Get-Date).ToString('o'); state=$result.state; applicationPid=$result.applicationPid; applicationStartTicks=$result.applicationStartTicks }
+    if ($window) { $event.windowHandle=$window.ToString(); $event.windowKind=$kind }
+    foreach ($count in @('uiNodes','tabItems','editInputs','consoleLabels','promptValueLength','writtenValueLength','filenameCandidates','openCandidates','observedForegroundPid','promptProcessId','focusedProcessId','pickerForegroundPid','pickerOwnerPid','pickerZeroForegroundSamples','pickerIdentityBits','pickerVisibilityWaits')) {
+      if ($null -ne $result.$count) { $event[$count]=[int]$result.$count }
+    }
+    foreach ($field in @('promptReadOnly','promptValueShape','resumedOwnPayload','catalogDialogState','focusStage','foregroundIsDevTools','promptHasFocus','activationRequested','foregroundKind','focusedNameIsPrompt','pickerWindowClass','pickerForegroundKind','scriptSubmitted','errorKind','devToolsOpenMethod')) {
+      if ($null -ne $result.$field) { $event[$field]=$result.$field }
+    }
+    $report.events+=@($event)
+    Save-Report
+    return $result
+  }
+  if ($ApplyOnce) {
+    $report.mode='ApplyOnce'
+    $result=Invoke-Adapter
+    Write-Output ($result | ConvertTo-Json -Compress)
+  } elseif ($Watch) {
+    $report.mode='Watch'
     $setupReady=$true
     if ($SetupProfileDirectory) {
       $setupDeadline=if ($ParentProcessId) {[datetime]::MaxValue} else {(Get-Date).AddSeconds($WatchSeconds)}
@@ -169,6 +181,8 @@ if ($ApplyOnce) {
       $setupReady=$setup.state -eq 'RuntimeSetupReady'
     }
     $seen=[Collections.Generic.HashSet[string]]::new()
+    $observedProcess=$null
+    [void][Reflection.Assembly]::LoadFrom($native)
     $before=0
     if ($ParentProcessId) {
       $before=(Get-Item -LiteralPath $RegistryFile).LastWriteTimeUtc.Ticks
@@ -181,34 +195,49 @@ if ($ApplyOnce) {
       Clear-SetupNotice
       $candidates=@(Get-Process -Name Claude -ErrorAction SilentlyContinue | ForEach-Object {
         try {
-          if ($_.MainWindowHandle -eq 0 -or $_.Path -ne $bundle.sourceExecutable) { return }
+          if ($_.Path -ne $bundle.sourceExecutable) { return }
           $ticks=$_.StartTime.ToUniversalTime().Ticks
-          $key=$_.Id.ToString()+':'+$ticks
-          if ($ticks -ge $before -and $ticks -gt $SkipClaudeStartedThrough -and !$seen.Contains($key)) {
-            @{ pid=$_.Id; ticks=$ticks; key=$key }
+          if ($_.MainWindowHandle -ne 0) {
+            @{ pid=$_.Id; ticks=$ticks; main=$_.MainWindowHandle.ToInt64(); fresh=($ticks -ge $before -and $ticks -gt $SkipClaudeStartedThrough) }
           }
         } catch { }
       })
       if ($candidates.Count -eq 1) {
         $candidate=$candidates[0]
-        if ((Test-Path -LiteralPath $report.stopFile) -or !(Test-Owner)) { break }
-        $result=Invoke-Adapter $candidate.pid $candidate.ticks
-        if ($result.applicationPid -and ($result.scriptSubmitted -or $result.state -notin @('DeferredNoForegroundClaude','FocusChanged','ApplicationExited'))) {
-          [void]$seen.Add(($result.applicationPid.ToString()+':'+$result.applicationStartTicks))
-          Write-Output ($result | ConvertTo-Json -Compress)
+        $processKey="$($candidate.pid):$($candidate.ticks)"
+        $baseline=!$candidate.fresh -and $observedProcess -ne $processKey
+        $observedProcess=$processKey
+        $present=[Collections.Generic.HashSet[string]]::new()
+        foreach ($window in [RuntimeConsoleBridge]::WindowHandles($candidate.pid)) {
+          $key="$($candidate.pid):$($candidate.ticks):$window"
+          [void]$present.Add($key)
+          # A replacement watcher leaves existing windows alone. A setup window
+          # opened later belongs to the new preference even in the same process.
+          if ($baseline) { [void]$seen.Add($key); continue }
+          if ($seen.Contains($key)) { continue }
+          $kind=[RuntimeConsoleBridge]::WindowKind($window,$candidate.pid,$candidate.main)
+          if (!$candidate.fresh -and $kind -eq 'main') { [void]$seen.Add($key); continue }
+          if (!$kind -or ![RuntimeConsoleBridge]::MaySchedule($window,$candidate.pid,$kind,[bool]$ActivateClaude)) { continue }
+          if ((Test-Path -LiteralPath $report.stopFile) -or !(Test-Owner)) { break }
+          Write-Output (@{state='LoadingLanguage';applicationPid=$candidate.pid;windowKind=$kind} | ConvertTo-Json -Compress)
+          $result=Invoke-Adapter $candidate.pid $candidate.ticks $window $kind
+          if ($result.scriptSubmitted -or $result.state -notin @('DeferredNoForegroundClaude','FocusChanged','FocusChangedBeforeExecute','ForegroundActivationDenied','DevToolsNotForeground','ApplicationExited','WindowNotReady','FrontendFocusNotVerified','ConsoleFocusNotVerified','ApplicationIdentityChanged','ExistingFileDialog')) {
+            [void]$seen.Add($key)
+            Write-Output ($result | ConvertTo-Json -Compress)
+          } else {
+            Write-Output (@{state='WaitingForClaude';applicationPid=$candidate.pid} | ConvertTo-Json -Compress)
+          }
         }
-        elseif ($result.state -eq 'AdapterError') {
-          [void]$seen.Add($candidate.key)
-          Write-Output ($result | ConvertTo-Json -Compress)
-        }
+        $seen.IntersectWith($present)
       }
       Start-Sleep -Seconds 2
     }
-  } finally {
-    if ($script:setupIcon) { $script:setupIcon.Dispose() }
-    if ($owned) { $mutex.ReleaseMutex() }; $mutex.Dispose()
   }
+  $report.finishedAt=(Get-Date).ToString('o')
+  Save-Report
+  @{report=$reportFile;native=$native;mode=$report.mode;selfTestPassed=$true;uiAttempted=($ApplyOnce -or $Watch)} | ConvertTo-Json -Compress
+} finally {
+  if ($script:setupIcon) { $script:setupIcon.Dispose() }
+  if ($owned) { $mutex.ReleaseMutex() }
+  if ($mutex) { $mutex.Dispose() }
 }
-$report.finishedAt=(Get-Date).ToString('o')
-Save-Report
-@{report=$reportFile;native=$native;mode=$report.mode;selfTestPassed=$true;uiAttempted=($ApplyOnce -or $Watch)} | ConvertTo-Json -Compress

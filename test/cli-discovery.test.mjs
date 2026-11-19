@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 childProcess.execFileSync = (command, args) => {
   fs.appendFileSync(process.env.DISCOVERY_TEST_LOG, JSON.stringify({ command, args }) + '\\n');
-  if (args.some(arg => arg.includes('Get-AppxPackage'))) return '';
+  if (args.some(arg => arg.includes('Get-AppxPackage -Name "*Claude*"'))) return process.env.TEST_APPX_PACKAGES || '[]';
   if (args.some(arg => arg.includes('Get-CimInstance'))) return '0';
   throw new Error('Unexpected host process');
 };
@@ -49,6 +49,44 @@ function gateway(directory, configured = true) {
   fs.writeFileSync(path.join(directory, 'configLibrary', '_meta.json'), JSON.stringify({ appliedId: profileId }));
   fs.writeFileSync(path.join(directory, 'configLibrary', profileId + '.json'), JSON.stringify({ inferenceProvider: 'gateway', inferenceGatewayApiKey: 'never-print-this-key' }));
 }
+
+test('closed Store installs resolve only the two exact package families with their own profile and cache',
+  { skip: process.platform !== 'win32' }, t => {
+    const f = fixture(t);
+    const packages = [];
+    const add = (name, publisher) => {
+      const family = name + '_' + publisher;
+      const location = path.join(f.root, 'WindowsApps', name + '_5.11492.5.0_x64__' + publisher);
+      const source = path.join(location, 'app');
+      fs.mkdirSync(path.join(source, 'resources'), { recursive: true });
+      fs.writeFileSync(path.join(source, 'Claude.exe'), '');
+      fs.writeFileSync(path.join(source, 'resources', 'ion-dist.asar'), '');
+      const profile = path.join(f.env.LOCALAPPDATA, 'Packages', family, 'LocalCache', 'Roaming', 'Claude-3p');
+      gateway(profile);
+      const cache = path.join(profile, 'Cache', 'Cache_Data');
+      fs.mkdirSync(cache, { recursive: true });
+      packages.push({ PackageFamilyName: family, InstallLocation: location });
+      f.env.TEST_APPX_PACKAGES = JSON.stringify(packages);
+      return { source, profile, cache };
+    };
+    add('AnthropicPBC.Claude', 'pzs8sxrjxfjjc');
+    add('Claude', 'fnn82j28hfe8t');
+    add('Other.Claude', 'fnn82j28hfe8t');
+    const rejected = f.json('discover');
+    assert.equal(rejected.source, null);
+    assert.equal(rejected.profileDirectory, null);
+    assert.deepEqual(rejected.caches, []);
+    for (const [name, publisher] of [['Claude', 'pzs8sxrjxfjjc'], ['AnthropicPBC.Claude', 'fnn82j28hfe8t']]) {
+      const accepted = add(name, publisher);
+      const report = f.json('discover');
+      assert.deepEqual(report.issues, []);
+      assert.equal(report.source, accepted.source);
+      assert.equal(report.profileDirectory, accepted.profile);
+      assert.deepEqual(report.caches, [accepted.cache]);
+      packages.pop();
+      fs.rmSync(accepted.profile, { recursive: true });
+    }
+  });
 function managed(root) {
   fs.mkdirSync(path.join(root, 'app', 'resources'), { recursive: true });
   fs.writeFileSync(path.join(root, 'app', 'resources', 'app.asar'), 'fixture archive');

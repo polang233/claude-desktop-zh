@@ -63,15 +63,45 @@ test('normal browser GETs need no Origin; no public endpoint reveals the capabil
     assert.equal((await fetch(base + '/api/state', { headers: { authorization: 'Bearer ' + 'é'.repeat(64) } })).status, 401);
     const state = await fetch(base + '/api/state', { headers });
     assert.equal(state.status, 200);
-    assert(!(await state.text()).includes(token));
+    const body = await state.text();
+    assert(!body.includes(token));
+    const manifest = JSON.parse(fs.readFileSync(new URL('../integrations/magpie/package.json', import.meta.url), 'utf8'));
+    assert.equal(JSON.parse(body).version, manifest.version);
   } finally { await workbench.close(); }
+});
+
+test('opening project links requires the active embedded session and accepts only fixed destinations', async t => {
+  const opens = [];
+  let current = true;
+  const workbench = createWorkbench(options, fakeRun, undefined, {
+    allowSandboxFrames: true, current: () => current, openLink: async destination => { opens.push(destination); }
+  });
+  t.after(() => workbench.close());
+  const address = await workbench.listen();
+  const base = `http://127.0.0.1:${address.port}`;
+  const token = new URLSearchParams(new URL(workbench.url()).hash.slice(1)).get('token');
+  const headers = { origin: 'null', authorization: 'Bearer ' + token };
+  const route = base + '/api/open-link/repository';
+  assert.equal((await fetch(route, { headers })).status, 404);
+  assert.equal((await fetch(route, { method: 'POST', headers: { origin: 'null' } })).status, 401);
+  assert.equal((await fetch(route, { method: 'POST', headers: { ...headers, origin: 'https://example.com' } })).status, 403);
+  assert.equal((await fetch(route + '?url=https://example.com', { method: 'POST', headers })).status, 404);
+  assert.equal((await fetch(route, { method: 'POST', headers, body: '{"url":"https://example.com"}' })).status, 400);
+  assert.equal((await fetch(base + '/api/open-link/unknown', { method: 'POST', headers })).status, 404);
+  assert.deepEqual(opens, []);
+  assert.equal((await fetch(route, { method: 'POST', headers })).status, 200);
+  assert.equal((await fetch(base + '/api/open-link/author', { method: 'POST', headers })).status, 200);
+  assert.deepEqual(opens, ['repository', 'author']);
+  current = false;
+  assert.equal((await fetch(route, { method: 'POST', headers })).status, 409);
+  assert.deepEqual(opens, ['repository', 'author']);
 });
 
 test('maintenance reports runtime readiness independently of protected resources', async () => {
   const commands = [];
   const workbench = createWorkbench({ projectDirectory }, async (_, args) => {
     commands.push(args[0]);
-    return { eligible: false, protectedInstall: true, runtimeOnly: true };
+    return args[0] === 'original-status' ? { status: 'not-installed' } : { eligible: false, protectedInstall: true, runtimeOnly: true };
   }, undefined, { runtime: () => ({ state: 'watching', lastResult: 'Applied', reportDirectory: 'private-report' }) });
   try {
     const address = await workbench.listen();
@@ -80,8 +110,8 @@ test('maintenance reports runtime readiness independently of protected resources
     assert.equal((await fetch(base + '/api/maintenance')).status, 401);
     const response = await fetch(base + '/api/maintenance', { headers: { authorization: 'Bearer ' + token } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { resources: 'protected', runtime: { state: 'watching', lastResult: 'Applied' } });
-    assert.deepEqual(commands, ['original-check']);
+    assert.deepEqual(await response.json(), { resources: 'protected', transaction: { status: 'not-installed' }, runtime: { state: 'watching', lastResult: 'Applied' } });
+    assert.deepEqual(commands, ['original-check', 'original-status']);
   } finally { await workbench.close(); }
 });
 
@@ -120,7 +150,7 @@ test('embedded UI needs its bearer for reads and settings, and accepts only vali
   assert.equal((await fetch(base + '/api/state', { headers: { ...headers, origin: 'https://unrelated.example' } })).status, 403);
   assert.equal((await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify({ ...saved, command: 'untrusted' }) })).status, 400);
   assert.equal(saves, 0);
-  const changed = { locale: 'zh-Hant', runtimeAutoLoad: false };
+  const changed = { locale: 'zh-Hant', runtimeAutoLoad: false, method: 'runtime' };
   const response = await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify(changed) });
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), changed);
   assert.deepEqual((await (await fetch(base + '/api/state', { headers })).json()).preferences, changed);
@@ -260,27 +290,27 @@ test('page uses fragment authentication and selected locale without editing JSON
   const button = element({ dataset: { action: 'switch', write: 'true' }, addEventListener(_event, callback) { this.click = callback; } });
   const token = 'a'.repeat(64);
   const calls = [];
-  let confirmed = false, scrubbed = false;
+  let scrubbed = false;
   const context = {
     HTMLElement: ui.HTMLElement, URLSearchParams, location: { hash: '#token=' + token, pathname: '/' },
     history: { replaceState(_state, _title, url) { assert.equal(url, '/'); scrubbed = true; } },
     document: { ...ui.document, querySelectorAll: selector => selector === 'button[data-action]' ? [button] : ui.document.querySelectorAll(selector) },
-    window: { confirm: () => confirmed },
     setTimeout: callback => { callback(); },
     fetch: async (url, init) => {
       assert(scrubbed);
       calls.push({ url, init });
       assert.equal(init.headers.authorization, 'Bearer ' + token);
-      return { ok: true, json: async () => url === '/api/state' ? { paths: { locale: 'zh-Hant', mode: 'copy', root: 'managed', allowWrites: true }, preferences: { locale: 'zh-Hant', runtimeAutoLoad: true }, canSave: true } : url === '/api/run' ? { id: 'job' } : { state: 'done', result: { ok: true } } };
+      return { ok: true, json: async () => url === '/api/state' ? { paths: { locale: 'zh-Hant', mode: 'copy', root: 'managed', allowWrites: true }, preferences: { locale: 'zh-Hant', runtimeAutoLoad: true }, canSave: true } : url === '/api/run' ? { id: 'job', state: 'running' } : { state: 'done', result: { ok: true } } };
     }
   };
   await vm.runInNewContext(fs.readFileSync(new URL('../integrations/magpie/page/app.js', import.meta.url), 'utf8'), context);
   assert.equal(elements.get('locale').value, 'zh-Hant');
-  await button.click();
+  const cancelled = button.click();
+  elements.get('confirm-cancel').click(); await cancelled;
   assert.equal(calls.length, 1, 'cancel must not submit a write');
-  confirmed = true;
   elements.get('locale').value = 'zh-Hans';
-  await button.click();
+  const accepted = button.click();
+  elements.get('confirm-accept').click(); await accepted;
   assert.deepEqual(JSON.parse(calls.find(call => call.url === '/api/run').init.body), { action: 'switch', confirm: 'switch', locale: 'zh-Hans' });
   assert(!calls.some(call => call.url === '/session'));
   assert.equal(button.disabled, false);

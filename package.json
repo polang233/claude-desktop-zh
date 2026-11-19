@@ -1,6 +1,6 @@
 {
   "name": "magpie-claude-zh",
-  "version": "1.1.1",
+  "version": "1.1.5",
   "description": "为原版 Claude Desktop 的第三方模式加载官方中文界面，保留原来的设置、会话和历史。默认简体中文。",
   "type": "module",
   "main": "./integrations/magpie/server.mjs",
@@ -61,6 +61,8 @@
     "docs/magpie.md",
     "docs/macos.md",
     "docs/images/claude-settings-zh.png",
+    "docs/images/magpie-plugin-settings.png",
+    "docs/images/claude-language-choice.png",
     "README.md",
     "LICENSE",
     "NOTICE"

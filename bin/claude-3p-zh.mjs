@@ -8,6 +8,7 @@ import { importCache } from '../lib/cache.mjs';
 import { readJSON, localeValue } from '../lib/common.mjs';
 import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLayout, runtimeSourceBinding } from '../lib/discover.mjs';
 import { buildRuntimeLocalization } from '../scripts/build-runtime-localization.mjs';
+import { buildHostedRuntime } from '../lib/runtime-cache.mjs';
 import { runtimeSetupStatus, setupRuntime, restoreRuntimeSetup, windowsSetupGuard } from '../lib/runtime-setup.mjs';
 
 const help = `claude-desktop-zh ${readJSON(new URL('../package.json', import.meta.url)).version} (Node 22+)
@@ -59,7 +60,7 @@ function argumentsOf(argv) {
     if (options[key] !== undefined || !argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error('Flag requires one value: --' + key);
     options[key] = argv[++i];
   }
-  const valid = new Set(['source', 'locale', 'catalog-dir', 'kind', 'file', 'url', 'cache', 'destination', 'gateway-profile', 'gateway-url', 'gateway-key-file', 'root', 'profile-dir', 'state-dir', 'output', 'runtime-owner']);
+  const valid = new Set(['source', 'locale', 'catalog-dir', 'kind', 'file', 'url', 'cache', 'destination', 'gateway-profile', 'gateway-url', 'gateway-key-file', 'root', 'profile-dir', 'state-dir', 'output', 'runtime-owner', 'runtime-cache']);
   for (const key of Object.keys(options)) if (!valid.has(key)) throw new Error('Unknown flag: --' + key);
   return { words, options };
 }
@@ -111,7 +112,13 @@ async function main() {
     case 'inspect': result = inspect(source()); break;
     case 'detect-3p': result = detect3p(options['profile-dir'] ?? profile().directory); break;
     case 'plan': result = plan(source(), directory(), locale()).report; break;
-    case 'runtime-export': result = buildRuntimeLocalization(source(), directory(), locale(), required(options, 'output')); break;
+    case 'runtime-export': {
+      const output = required(options, 'output');
+      result = options['runtime-cache']
+        ? await buildHostedRuntime(source(), directory(), locale(), output, options['runtime-cache'])
+        : buildRuntimeLocalization(source(), directory(), locale(), output);
+      break;
+    }
     case 'runtime-source': result = runtimeSourceBinding(source()); break;
     case 'runtime-setup-status': result = runtimeSetupStatus(profile().directory); break;
     case 'runtime-setup': {

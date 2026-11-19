@@ -9,9 +9,11 @@ const ASSETS = new Map([
   ['/', [fileURLToPath(new URL('./page/index.html', import.meta.url)), 'text/html; charset=utf-8']],
   ['/app.js', [fileURLToPath(new URL('./page/app.js', import.meta.url)), 'text/javascript; charset=utf-8']],
   ['/style.css', [fileURLToPath(new URL('./page/style.css', import.meta.url)), 'text/css; charset=utf-8']],
-  ['/icon.png', [fileURLToPath(new URL('./page/icon.png', import.meta.url)), 'image/png']]
+  ['/icon.png', [fileURLToPath(new URL('./page/icon.png', import.meta.url)), 'image/png']],
+  ['/author-avatar.jpg', [fileURLToPath(new URL('./page/author-avatar.jpg', import.meta.url)), 'image/jpeg']]
 ]);
 const LOCALES = ['zh-Hans', 'zh-Hant'];
+const { version } = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const CONFIRMED_ACTIONS = new Set([...WRITES, 'launch']);
 const MAX_JOBS = 32;
 const IDLE_TIMEOUT = 15 * 60 * 1000;
@@ -32,6 +34,10 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
   const jobs = new Map();
   let listening, closing, closed = false, idleTimer, activeJob;
 
+  function runtimeState() {
+    const runtime = settings.runtime?.();
+    return runtime && { state: runtime.state, progress: runtime.progress, lastResult: runtime.lastResult, message: runtime.message };
+  }
   function touch() {
     clearTimeout(idleTimer);
     if (closed) return;
@@ -78,7 +84,7 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
       response.setHeader('vary', 'Origin');
       if (request.method === 'OPTIONS') {
         response.setHeader('access-control-allow-methods', 'GET, POST');
-        response.setHeader('access-control-allow-headers', 'authorization, content-type');
+        response.setHeader('access-control-allow-headers', 'authorization, content-type, if-match');
         response.writeHead(204); response.end(); return;
       }
     }
@@ -87,40 +93,62 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
     // There is deliberately no HTTP endpoint that mints or reveals a token.
     if (!target.pathname.startsWith('/api/')) return send(response, 404, { error: 'Not found.' });
     if (!requireSession(request, response)) return;
-    if (settings.current && !settings.current()) return send(response, 409, { error: 'Plugin configuration changed. Reopen the page.' });
+    if (settings.current && !settings.current()) return send(response, 409, { error: '插件配置或汉化设置已更改，请重新打开插件页。' });
+    const expectedRevision = request.headers['if-match'];
+    if (request.method === 'POST' && expectedRevision !== undefined && settings.revision && settings.revision() !== expectedRevision) {
+      return send(response, 409, { error: '汉化设置已更改，请重新打开插件页。' });
+    }
     if (request.method === 'GET' && target.pathname === '/api/state') {
-      return send(response, 200, { paths: await controller.paths(), sync: controller.state(), jobs: [...jobs.values()],
-        preferences: settings.get?.() ?? { locale: options.locale ?? 'zh-Hans', runtimeAutoLoad: options.runtimeAutoLoad !== false },
+      return send(response, 200, { version, revision: settings.revision?.(), paths: await controller.paths(), sync: controller.state(), jobs: [...jobs.values()],
+        preferences: settings.get?.() ?? { locale: options.locale ?? 'zh-Hans', runtimeAutoLoad: options.runtimeAutoLoad !== false, method: 'runtime' },
         canSave: typeof settings.save === 'function' });
     }
+    const destination = /^\/api\/open-link\/(repository|author)$/.exec(request.url)?.[1];
+    if (request.method === 'POST' && destination && settings.openLink) {
+      if (request.headers['transfer-encoding'] || Number(request.headers['content-length'] ?? 0) !== 0) {
+        return send(response, 400, { error: 'The link takes no input.' });
+      }
+      try {
+        await settings.openLink(destination);
+        return send(response, 200, { opened: true });
+      } catch {
+        return send(response, 503, { error: 'Could not open the default browser.' });
+      }
+    }
+    if (request.method === 'GET' && target.pathname === '/api/runtime') {
+      return send(response, 200, { runtime: runtimeState(), phase: controller.state().phase, revision: settings.revision?.(), preferences: settings.get?.() });
+    }
     if (request.method === 'GET' && target.pathname === '/api/maintenance') {
-      let resources = 'unknown';
+      let resources = 'unknown', transaction, source;
       if (options.mode === 'copy') resources = 'copy';
       else if (activeJob || controller.state().busy) resources = 'busy';
       else {
         try {
           const check = await controller.execute('check');
+          source = check.source;
           if (check.protectedInstall) resources = 'protected';
           else if (check.runtimeOnly || !check.eligible) resources = 'unsupported';
           else resources = controller.state().allowWrites === false ? 'disabled' : 'eligible';
         } catch {
           if (controller.state().busy) resources = 'busy';
         }
+        try {
+          const record = await controller.execute('status');
+          transaction = { status: record.status, locale: record.locale, source: record.source, intact: record.intact };
+        } catch { transaction = { status: 'unknown' }; }
       }
-      const runtime = settings.runtime?.();
-      return send(response, 200, { resources, runtime: runtime && {
-        state: runtime.state, lastResult: runtime.lastResult, message: runtime.message
-      } });
+      return send(response, 200, { resources, transaction, source, runtime: runtimeState() });
     }
     if (request.method === 'POST' && target.pathname === '/api/preferences') {
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
       let value;
-      try { value = validatePreferences(await readJSON(request)); }
+      try { value = validatePreferences(await readJSON(request), settings.get?.().method); }
       catch { return send(response, 400, { error: 'Invalid language preferences.' }); }
       if (!settings.save) return send(response, 409, { error: 'Open this page from the active magpie plugin to save settings.' });
       if (activeJob || controller.state().busy) return send(response, 409, { error: 'Another plugin operation is running.' });
-      activeJob = Promise.resolve().then(() => settings.save(value));
-      try { return send(response, 200, await activeJob); } finally { activeJob = undefined; }
+      response.setTimeout(120_000);
+      activeJob = Promise.resolve().then(() => settings.save(value, request.headers['if-match']));
+      try { const result = await activeJob; return send(response, 200, { ...result, revision: settings.revision?.() }); } finally { activeJob = undefined; }
     }
     if (request.method === 'POST' && target.pathname === '/api/run') {
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
@@ -135,7 +163,7 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
       const id = crypto.randomBytes(8).toString('hex');
       const job = { id, action: body.action, locale: body.locale, state: 'running', startedAt: new Date().toISOString() };
       jobs.set(id, job);
-      activeJob = Promise.resolve().then(() => controller.execute(body.action, body.confirm, { locale: body.locale })).then(result => {
+      activeJob = Promise.resolve().then(() => controller.execute(body.action, body.confirm, { locale: body.locale, ...(request.headers['if-match'] ? { revision: request.headers['if-match'] } : {}), ...(body.expectedSource ? { expectedSource: body.expectedSource } : {}) })).then(result => {
         job.state = 'done'; job.result = publicResult(result);
       }, error => {
         job.state = 'failed'; job.error = error.message;

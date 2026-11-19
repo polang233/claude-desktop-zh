@@ -1,3 +1,4 @@
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createController } from '../integrations/magpie/controller.mjs';
@@ -41,7 +42,7 @@ test('original installed apply plans from saved originals and imports once befor
   await controller.execute('install', 'install', { locale: 'zh-Hant' });
   assert.deepEqual(calls.map(args => args[0]), ['original-check', 'detect-3p', 'original-plan', 'catalog', 'original-plan', 'original-install']);
   for (const args of calls.filter(args => args[0] === 'original-plan')) {
-    assert.equal(args[args.indexOf('--state-dir') + 1], 'saved-state');
+    assert.equal(args[args.indexOf('--state-dir') + 1], path.join('saved-state', 'resource-backup'));
     assert.equal(args[args.indexOf('--locale') + 1], 'zh-Hant');
   }
 });
@@ -94,7 +95,7 @@ test('original recovery needs no discovery and explicit read-only setting is pre
   const calls = [];
   const controller = createController({ stateDirectory: 'saved-state' }, async (_, args) => { calls.push(args); return { status: 'restored' }; });
   await controller.execute('restore', 'restore');
-  assert.deepEqual(calls, [['original-restore', '--state-dir', 'saved-state']]);
+  assert.deepEqual(calls, [['original-restore', '--state-dir', path.join('saved-state', 'resource-backup')]]);
   const readonly = createController({ allowWrites: false }, async () => { throw new Error('must not execute'); });
   await assert.rejects(readonly.execute('install', 'install'), /Writes disabled/);
 });

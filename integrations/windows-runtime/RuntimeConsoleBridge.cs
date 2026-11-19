@@ -34,6 +34,10 @@ public static class RuntimeConsoleBridge {
     static int pickerIdentityBits;
     static int pickerVisibilityWaits;
     static bool scriptSubmitted;
+    static IntPtr watchWindow;
+    static IntPtr submittedTools;
+    static string watchKind;
+    static Uri watchDocument;
     static string devToolsOpenMethod="NotRequested";
     static Process lifetimeParent;
     static long lifetimeParentStarted;
@@ -59,6 +63,8 @@ public static class RuntimeConsoleBridge {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr handle, StringBuilder text, int count);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr handle,uint command);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern bool SetProp(IntPtr handle,string name,IntPtr value);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetProp(IntPtr handle,string name);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr handle, out uint process);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr handle);
@@ -74,6 +80,70 @@ public static class RuntimeConsoleBridge {
     static uint Pid(IntPtr handle) { uint pid; GetWindowThreadProcessId(handle, out pid); return pid; }
     static string Title(IntPtr handle) { var text=new StringBuilder(2048); GetWindowText(handle,text,text.Capacity); return text.ToString(); }
     static string ClassName(IntPtr handle) { var text=new StringBuilder(256); GetClassName(handle,text,text.Capacity); return text.ToString(); }
+    public static long[] WindowHandles(int pid) {
+        var result=new List<long>();
+        EnumWindows(delegate(IntPtr h,IntPtr unused) {
+            if(Pid(h)==pid && ClassName(h)=="Chrome_WidgetWin_1" &&
+                !Regex.IsMatch(Title(h),@"^(?:DevTools|Developer Tools) - ",RegexOptions.IgnoreCase)) result.Add(h.ToInt64());
+            return true;
+        },IntPtr.Zero);
+        return result.ToArray();
+    }
+    static bool SetupRoute(Uri uri) { return uri.AbsolutePath.TrimEnd('/')=="/setup-desktop-3p"; }
+    static string RendererKind(Uri uri,bool setupControls,bool mainCandidate) {
+        if(uri!=null && SetupRoute(uri))return "setup";
+        if(setupControls)return uri==null || uri.AbsolutePath=="/"?"setup":null;
+        return uri!=null && mainCandidate?"main":null;
+    }
+    static Uri DocumentUri(IntPtr h,int pid) {
+        var root=AutomationElement.FromHandle(h);
+        Uri found=null;
+        foreach(AutomationElement doc in root.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Document))) {
+            object pattern;
+            if(!doc.TryGetCurrentPattern(ValuePattern.Pattern,out pattern))continue;
+            string url=((ValuePattern)pattern).Current.Value;
+            if(!FrontendDocument(url,doc.Current.ProcessId,pid,doc.Current.IsEnabled,!doc.Current.IsOffscreen))continue;
+            if(found!=null)return null;
+            found=new Uri(url);
+        }
+        return found;
+    }
+    public static string WindowKind(long hwnd,int pid,long main) {
+        var h=new IntPtr(hwnd);
+        if(Pid(h)!=pid || !IsWindowVisible(h) || !IsWindowEnabled(h))return null;
+        try {
+            var uri=DocumentUri(h,pid);
+            if(uri!=null && SetupRoute(uri))return "setup";
+            var root=AutomationElement.FromHandle(h);
+            // Electron's top-level UIA name may be identical in both windows.
+            var search=new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Search settings"),
+                new PropertyCondition(AutomationElement.NameProperty,"搜索设置"),new PropertyCondition(AutomationElement.NameProperty,"搜尋設定"));
+            bool setupControls=root.FindFirst(TreeScope.Descendants,new AndCondition(search,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Edit)))!=null &&
+                root.FindFirst(TreeScope.Descendants,new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Configure third-party inference"),
+                    new PropertyCondition(AutomationElement.NameProperty,"配置第三方推理"),new PropertyCondition(AutomationElement.NameProperty,"設定第三方推論")))!=null;
+            return RendererKind(uri,setupControls,hwnd==main || Title(h)=="Claude");
+        } catch(ElementNotAvailableException) { return null; }
+        catch(InvalidOperationException) { return null; }
+    }
+    static bool MatchingTools(string title,int pid,int expected) {
+        if(!DevToolsTarget(title,pid,expected))return false;
+        if(watchWindow==IntPtr.Zero)return true;
+        Uri url;
+        if(!Uri.TryCreate(title.Substring(title.IndexOf(" - ")+3),UriKind.Absolute,out url) ||
+            !FrontendDocument(url.AbsoluteUri,pid,expected,true,true))return false;
+        if(watchKind=="setup")return SetupRoute(url);
+        return watchDocument!=null && !SetupRoute(url) && url.AbsolutePath==watchDocument.AbsolutePath;
+    }
+    public static bool MaySchedule(long hwnd,int pid,string kind,bool activate) {
+        var foreground=GetForegroundWindow();
+        if(foreground.ToInt64()==hwnd)return true;
+        if(Pid(foreground)!=pid)return activate && kind=="main";
+        string title=Title(foreground);
+        if(!DevToolsTarget(title,pid,pid))return false;
+        Uri url;
+        if(!Uri.TryCreate(title.Substring(title.IndexOf(" - ")+3),UriKind.Absolute,out url))return false;
+        return SetupRoute(url)==(kind=="setup");
+    }
     public static bool DevToolsTarget(string title, int actualPid, int expectedPid) {
         return actualPid==expectedPid
             && Regex.IsMatch(title,@"^(?:DevTools|Developer Tools) - app://localhost(?:/|$)",RegexOptions.IgnoreCase);
@@ -127,7 +197,10 @@ public static class RuntimeConsoleBridge {
     static List<IntPtr> Tools(int pid) {
         var windows=new List<IntPtr>();
         EnumWindows(delegate(IntPtr h,IntPtr unused) {
-            if(IsWindowVisible(h) && DevToolsTarget(Title(h),(int)Pid(h),pid)) windows.Add(h);
+            if(IsWindowVisible(h) && MatchingTools(Title(h),(int)Pid(h),pid)) {
+                var owner=GetWindow(h,4); // GW_OWNER. Detached Electron tools may be unowned.
+                if(watchWindow==IntPtr.Zero || owner==IntPtr.Zero || owner==watchWindow) windows.Add(h);
+            }
             return true;
         },IntPtr.Zero);
         return windows;
@@ -178,7 +251,10 @@ public static class RuntimeConsoleBridge {
             var dialog=Process.GetProcessById(pid);
             dialogStart=dialog.StartTime.ToUniversalTime().Ticks;
             if((expectedPid!=0 && pid!=expectedPid) || (expectedStart!=0 && dialogStart!=expectedStart))return false;
-            bool visible=IsWindowVisible(handle),standard=ClassName(handle)=="#32770",owner=(int)Pid(GetWindow(handle,4))==browser.Id;
+            IntPtr ownerWindow=GetWindow(handle,4);
+            bool visible=IsWindowVisible(handle),standard=ClassName(handle)=="#32770",owner=Pid(ownerWindow)==browser.Id;
+            if(watchWindow!=IntPtr.Zero && submittedTools!=IntPtr.Zero)
+                owner=owner && (ownerWindow==watchWindow || ownerWindow==submittedTools);
             bool sameExe=Identity(dialog,exe,dialogStart),generation=dialogStart>=started,family=pid==browser.Id || ParentId(pid)==browser.Id;
             bits=(visible?1:0)|(standard?2:0)|(owner?4:0)|(sameExe?8:0)|(generation?16:0)|(family?32:0)|64;
             return MayUseDialog(visible && standard,owner,sameExe,generation,family);
@@ -370,6 +446,8 @@ public static class RuntimeConsoleBridge {
                         && FrontendDocument(((ValuePattern)value).Current.Value,document.Current.ProcessId,process.Id,document.Current.IsEnabled,!document.Current.IsOffscreen))documents.Add(document);
                 }
                 if(documents.Count>1)return "AmbiguousFrontend";
+                if(documents.Count==0 && watchKind=="setup" && handle==watchWindow &&
+                    WindowKind(handle.ToInt64(),process.Id,0)=="setup")return null;
                 if(documents.Count==1) {
                     if(!Identity(process,exe,started) || GetForegroundWindow()!=handle)return "FocusChanged";
                     focusStage="FrontendFocus";
@@ -478,7 +556,26 @@ public static class RuntimeConsoleBridge {
         // Explicit activation selects a unique visible process by its full
         // executable path. It neither launches Claude nor changes the default
         // foreground-only mode used by an ordinary watcher.
-        if(activateClaude) {
+        if(watchWindow!=IntPtr.Zero) {
+            Process target;
+            try { target=Process.GetProcessById(watchPid); }
+            catch(ArgumentException) { return "ApplicationExited"; }
+            if(!Identity(target,exe,watchStart) || Pid(watchWindow)!=watchPid)return "ApplicationExited";
+            if(WindowKind(watchWindow.ToInt64(),watchPid,target.MainWindowHandle.ToInt64())!=watchKind)return "WindowNotReady";
+            watchDocument=DocumentUri(watchWindow,watchPid);
+            if(watchDocument==null && watchKind!="setup")return "WindowNotReady";
+            var fg=GetForegroundWindow();
+            var existingTools=Tools(watchPid);
+            if(existingTools.Count>1)return "AmbiguousDevTools";
+            if(fg!=watchWindow && !existingTools.Contains(fg)) {
+                if(!activateClaude || watchKind=="setup" || Pid(fg)==watchPid)return "DeferredNoForegroundClaude";
+                if(FileDialogs(target,exe,watchStart).Count>0)return "ExistingFileDialog";
+                SetForegroundWindow(watchWindow);
+                var wait=Stopwatch.StartNew();
+                while(GetForegroundWindow()!=watchWindow && wait.ElapsedMilliseconds<1000)Thread.Sleep(50);
+                if(GetForegroundWindow()!=watchWindow)return "ForegroundActivationDenied";
+            }
+        } else if(activateClaude) {
             var matches=new List<Process>();
             foreach(var candidate in Process.GetProcessesByName("Claude")) {
                 try {
@@ -519,6 +616,7 @@ public static class RuntimeConsoleBridge {
         targetPid=pid; targetStarted=started;
         var existing=Tools(pid);
         if(existing.Count>1)return "AmbiguousDevTools";
+        if(watchWindow!=IntPtr.Zero && foreground!=watchWindow && !existing.Contains(foreground))return "FocusChanged";
         bool opened=existing.Count==0;
         devToolsOpenMethod=opened?"Shortcut":"ExistingWindow";
         if(opened) {
@@ -547,10 +645,15 @@ public static class RuntimeConsoleBridge {
         }
         if(tools.Count!=1)return tools.Count==0?"DevToolsNotAvailable":"AmbiguousDevTools";
         IntPtr handle=tools[0];
+        // Ownership follows the lifetime of this native window, including a focus retry.
+        string property="ClaudeZhTools."+manifestMarker;
+        if(opened && watchWindow!=IntPtr.Zero)SetProp(handle,property,watchWindow);
+        bool ownsTools=opened || (watchWindow!=IntPtr.Zero && GetProp(handle,property)==watchWindow);
         // An existing undocked DevTools window can be behind Claude. UIA SetFocus
         // alone does not activate its top-level window. Switch only within the
         // already-foreground verified Claude process, never from another app.
         if(Pid(GetForegroundWindow())!=pid || !Identity(process,exe,started))return "FocusChanged";
+        if(watchWindow!=IntPtr.Zero && GetForegroundWindow()!=watchWindow && GetForegroundWindow()!=handle)return "FocusChanged";
         if(GetForegroundWindow()!=handle) {
             SetForegroundWindow(handle);
             var focusClock=Stopwatch.StartNew();
@@ -567,7 +670,7 @@ public static class RuntimeConsoleBridge {
         // immediately after opening DevTools as a missing Console tab.
         while(console==null && clock.ElapsedMilliseconds<timeout) {
             if(!Identity(process,exe,started))return "ApplicationExited";
-            if(Pid(GetForegroundWindow())!=pid)return "FocusChanged";
+            if(GetForegroundWindow()!=handle)return "FocusChanged";
             root=AutomationElement.FromHandle(handle);
             var consoleNames=new OrCondition(new PropertyCondition(AutomationElement.NameProperty,"Console"),new PropertyCondition(AutomationElement.NameProperty,"控制台"),new PropertyCondition(AutomationElement.NameProperty,"主控台"));
             var consoleTypes=new OrCondition(new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.TabItem),new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button));
@@ -592,7 +695,7 @@ public static class RuntimeConsoleBridge {
             if(console==null)Thread.Sleep(200);
         }
         if(console==null)return "ConsoleTabNotFound";
-        if(Pid(GetForegroundWindow())!=pid || !Identity(process,exe,started))return "FocusChanged";
+        if(GetForegroundWindow()!=handle || !Identity(process,exe,started))return "FocusChanged";
         object select;
         if(console.TryGetCurrentPattern(SelectionItemPattern.Pattern,out select))((SelectionItemPattern)select).Select();
         else if(console.Current.ControlType==ControlType.Button && console.TryGetCurrentPattern(InvokePattern.Pattern,out select))((InvokePattern)select).Invoke();
@@ -612,7 +715,7 @@ public static class RuntimeConsoleBridge {
         if(promptReadOnly)return "ConsolePromptReadOnly";
         resumedOwnPayload=OwnPendingPayload(initialValue,template,manifestMarker);
         if(!EmptyPrompt(initialValue) && !resumedOwnPayload)return "ConsolePromptNotEmpty";
-        if(Pid(GetForegroundWindow())!=pid || !Identity(process,exe,started))return "FocusChanged";
+        if(GetForegroundWindow()!=handle || !Identity(process,exe,started))return "FocusChanged";
         prompt.SetFocus();
         var promptFocusClock=Stopwatch.StartNew();
         bool focusVerified=false;
@@ -628,6 +731,7 @@ public static class RuntimeConsoleBridge {
             Thread.Sleep(100);
         }
         if(!focusVerified)return promptProcessId!=pid?"ConsolePromptProcessMismatch":"ConsoleFocusNotVerified";
+        if(!MatchingTools(Title(handle),(int)Pid(handle),pid) || GetForegroundWindow()!=handle)return "FocusChangedBeforeExecute";
         value.SetValue(script);
         var valueClock=Stopwatch.StartNew();
         bool verified=false;
@@ -659,12 +763,14 @@ public static class RuntimeConsoleBridge {
         }
         if(!verified)return "ConsoleValueNotVerified";
         // Address Enter only to the verified DevTools HWND, never the foreground chat.
-        if(!DevToolsTarget(Title(handle),(int)Pid(handle),pid))return "DevToolsIdentityChanged";
+        if(!MatchingTools(Title(handle),(int)Pid(handle),pid) || (watchWindow!=IntPtr.Zero &&
+            WindowKind(watchWindow.ToInt64(),pid,process.MainWindowHandle.ToInt64())!=watchKind))return "DevToolsIdentityChanged";
         var priorDialogs=PriorFileDialogs(pid);
         foreach(IntPtr prior in priorDialogs)if(IsWindowVisible(prior))return "ExistingFileDialog";
         focusStage="BeforeExecute"; foregroundIsDevTools=GetForegroundWindow()==handle; promptHasFocus=Same(prompt,AutomationElement.FocusedElement);
         if(!foregroundIsDevTools || !promptHasFocus)return "FocusChangedBeforeExecute";
         scriptSubmitted=true;
+        submittedTools=handle;
         if(!PostMessage(handle,0x100,new IntPtr(0x0D),IntPtr.Zero))return "ExecuteNotDelivered";
         PostMessage(handle,0x101,new IntPtr(0x0D),IntPtr.Zero);
         if(catalog!=null) {
@@ -672,25 +778,30 @@ public static class RuntimeConsoleBridge {
             if(failure!=null)return failure;
         }
         clock.Restart();
-        bool focusAfterPicker=catalog==null;
+        focusStage="ReadingAcknowledgement";
         while(clock.ElapsedMilliseconds<timeout) {
             if(!Identity(process,exe,started))return "ApplicationExited";
             bool acknowledged=false;
-            if(!IsWindowVisible(handle) || !DevToolsTarget(Title(handle),(int)Pid(handle),pid))return "DevToolsClosedBeforeAcknowledgement";
-            // A file dialog owned by the main window can return focus there.
-            // Bring this exact DevTools window back only while Claude retains
-            // foreground ownership, after its file dialog has disappeared.
-            if(!focusAfterPicker && FileDialogs(process,exe,started).Count==0 && Pid(GetForegroundWindow())==pid) {
-                if(!Identity(process,exe,started))return "ApplicationExited";
-                focusStage="AcknowledgementFocus";
-                SetForegroundWindow(handle);
-                focusAfterPicker=GetForegroundWindow()==handle;
+            if(!IsWindowVisible(handle) || !MatchingTools(Title(handle),(int)Pid(handle),pid))return "DevToolsClosedBeforeAcknowledgement";
+            try {
+                // The localized main window exposes the same per-attempt receipt as
+                // the console. Read it from the original window without moving focus.
+                var receiptWindow=watchWindow!=IntPtr.Zero?watchWindow:foreground;
+                if(IsWindowVisible(receiptWindow) && Pid(receiptWindow)==pid) {
+                    var mainRoot=AutomationElement.FromHandle(receiptWindow);
+                    acknowledged=mainRoot.FindFirst(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.AutomationIdProperty,marker))!=null;
+                    if(acknowledged)focusStage=watchKind=="setup"?"SetupWindowAcknowledged":"MainWindowAcknowledged";
+                }
+                if(!acknowledged && (catalog==null || !opened || GetForegroundWindow()==handle)) {
+                    root=AutomationElement.FromHandle(handle);
+                    acknowledged=Acknowledged(root,marker);
+                }
             }
-            try { root=AutomationElement.FromHandle(handle); acknowledged=Acknowledged(root,marker); }
             catch(ElementNotAvailableException) { Thread.Sleep(200); continue; }
             if(acknowledged) {
                 // Close only the exact DevTools window opened by this invocation.
-                if(opened && Pid(GetForegroundWindow())==pid && EmptyPrompt(value.Current.Value) && IsWindowVisible(handle) && DevToolsTarget(Title(handle),(int)Pid(handle),pid))
+                if(ownsTools && Pid(GetForegroundWindow())==pid && EmptyPrompt(value.Current.Value) && IsWindowVisible(handle) && MatchingTools(Title(handle),(int)Pid(handle),pid))
                     PostMessage(handle,0x10,IntPtr.Zero,IntPtr.Zero);
                 return "Applied";
             }
@@ -698,7 +809,8 @@ public static class RuntimeConsoleBridge {
         }
         return "ApplicationNotAcknowledged";
     }
-    static void Require(bool condition) { if(!condition)throw new Exception("SelfTestFailed"); }
+    static int checks;
+    static void Require(bool condition) { checks++; if(!condition)throw new Exception("SelfTestFailed"); }
     static void SelfTest(int expectedParent=0) {
         Require(DevToolsMenuName(0,"Menu"));
         Require(DevToolsMenuName(0,"菜单"));
@@ -719,6 +831,21 @@ public static class RuntimeConsoleBridge {
         Require(!FrontendDocument("app://localhost/epitaxy",5,5,false,true));
         Require(!FrontendDocument("app://localhost/epitaxy",5,5,true,false));
         Require(DevToolsTarget("DevTools - app://localhost/new",5,5));
+        watchWindow=new IntPtr(10); watchKind="setup";
+        Require(RendererKind(null,true,false)=="setup");
+        Require(RendererKind(new Uri("app://localhost/"),true,true)=="setup");
+        Require(RendererKind(new Uri("app://localhost/setup-desktop-3p"),false,true)=="setup");
+        Require(RendererKind(new Uri("app://localhost/new"),false,true)=="main");
+        Require(RendererKind(new Uri("app://localhost/new"),true,false)==null);
+        Require(RendererKind(null,false,true)==null);
+        Require(MatchingTools("DevTools - app://localhost/setup-desktop-3p?opened=1",5,5));
+        Require(!MatchingTools("DevTools - app://localhost/setup-desktop-3p-decoy",5,5));
+        Require(!MatchingTools("DevTools - app://localhost/new",5,5));
+        Require(!MatchingTools("DevTools - app://localhost/setup-desktop-3p",6,5));
+        watchKind="main"; watchDocument=new Uri("app://localhost/new");
+        Require(MatchingTools("Developer Tools - app://localhost/new",5,5));
+        Require(!MatchingTools("DevTools - app://localhost/setup-desktop-3p",5,5));
+        watchWindow=IntPtr.Zero; watchKind=null; watchDocument=null;
         Require(!DevToolsTarget("Claude",5,5));
         Require(!DevToolsTarget("DevTools - app://localhost.evil/new",5,5));
         Require(!DevToolsTarget("DevTools - https://example.test/",5,5));
@@ -826,10 +953,15 @@ public static class RuntimeConsoleBridge {
     }
     [STAThread] public static int Main(string[] args) {
         try {
-            if((args.Length==1 || args.Length==2) && args[0]=="--self-test") { SelfTest(args.Length==2?Int32.Parse(args[1]):0); Console.WriteLine("{\"state\":\"SelfTestPassed\",\"cases\":117,\"uiActions\":0}"); return 0; }
+            if((args.Length==1 || args.Length==2) && args[0]=="--self-test") { SelfTest(args.Length==2?Int32.Parse(args[1]):0); Console.WriteLine("{\"state\":\"SelfTestPassed\",\"cases\":"+checks+",\"uiActions\":0}"); return 0; }
             bool activateClaude=args.Length>0 && args[args.Length-1]=="--activate-claude";
             if(activateClaude)Array.Resize(ref args,args.Length-1);
             int watchPid=0; long watchStart=0;
+            if(args.Length>=3 && args[args.Length-3]=="--watch-window") {
+                watchWindow=new IntPtr(Int64.Parse(args[args.Length-2])); watchKind=args[args.Length-1];
+                if(watchWindow==IntPtr.Zero || (watchKind!="main" && watchKind!="setup"))throw new ArgumentException("Invalid watch window");
+                Array.Resize(ref args,args.Length-3);
+            }
             if(args.Length>=3 && args[args.Length-3]=="--watch-target") {
                 watchPid=Int32.Parse(args[args.Length-2]); watchStart=Int64.Parse(args[args.Length-1]);
                 if(watchPid<=0 || watchStart<=0)throw new ArgumentException("Invalid watch target");

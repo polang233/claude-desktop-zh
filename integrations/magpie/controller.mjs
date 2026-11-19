@@ -10,13 +10,16 @@ export const WRITES = ['install', 'prepare', 'switch', 'restore', 'import-cache'
 export const ACTIONS = ['check', 'install', 'discover', 'detect', 'status', 'plan', 'import-cache', 'prepare', 'switch', 'restore', 'launch'];
 
 export function createController(options = {}, runProcess = runCLI) {
-  let busy = false;
+  let busy = false, phase;
   let lastSync = { state: 'not-run' };
   const defaults = defaultLayout();
   const root = options.managedRoot || defaults.managedRoot;
   const mode = options.mode ?? 'original';
   if (!['original', 'copy'].includes(mode)) throw new Error('Mode must be original or copy.');
-  const stateDirectory = options.stateDirectory || defaults.originalStateDirectory || path.join(path.dirname(root), 'original');
+  const preferenceDirectory = options.stateDirectory || defaults.originalStateDirectory;
+  // Historical CLI transactions live alongside preferences. New backups need an empty directory.
+  const legacyManifest = path.join(preferenceDirectory, 'original-state.json');
+  const stateDirectory = fs.existsSync(legacyManifest) ? preferenceDirectory : path.join(preferenceDirectory, 'resource-backup');
   const catalog = options.catalogDirectory || defaults.catalogDirectory;
   function configuration() {
     const project = path.resolve(options.projectDirectory || fileURLToPath(new URL('../../', import.meta.url)));
@@ -35,15 +38,15 @@ export function createController(options = {}, runProcess = runCLI) {
   const catalogArgs = () => ['--catalog-dir', catalog];
   const profileArgs = () => optional('--profile-dir', options.profileDirectory);
   const sourceArgs = () => optional('--source', options.sourceDirectory);
-  async function command(action, language = locale()) {
+  async function command(action, language = locale(), source = options.sourceDirectory) {
     let args;
     switch (action) {
       case 'discover': args = ['discover', ...sourceArgs(), ...profileArgs(), '--root', root, ...catalogArgs()]; break;
       case 'detect': args = ['detect-3p', ...profileArgs()]; break;
       case 'check': args = ['original-check', ...sourceArgs(), '--state-dir', stateDirectory]; break;
-      case 'install': args = ['original-install', ...sourceArgs(), '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()]; break;
+      case 'install': args = ['original-install', ...optional('--source', source), '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()]; break;
       case 'status': args = mode === 'original' ? ['original-status', '--state-dir', stateDirectory] : ['status', '--root', root]; break;
-      case 'plan': args = mode === 'original' ? ['original-plan', ...sourceArgs(), '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()] : ['plan', ...sourceArgs(), '--locale', language, ...catalogArgs()]; break;
+      case 'plan': args = mode === 'original' ? ['original-plan', ...optional('--source', source), '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()] : ['plan', ...sourceArgs(), '--locale', language, ...catalogArgs()]; break;
       case 'import-cache': args = ['catalog', 'cache', ...optional('--cache', options.cacheDirectory), '--locale', language, ...catalogArgs()]; break;
       case 'prepare': args = ['prepare-copy', ...sourceArgs(), '--destination', root, ...optional('--gateway-profile', options.gatewayProfile), ...profileArgs(), '--locale', language, ...catalogArgs()]; break;
       case 'switch': args = mode === 'original' ? ['original-switch', '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()] : ['switch', '--root', root, '--locale', language, ...catalogArgs()]; break;
@@ -51,6 +54,7 @@ export function createController(options = {}, runProcess = runCLI) {
       case 'launch': args = ['launch', '--root', root]; break;
       default: throw new Error('Unsupported action.');
     }
+    phase = action;
     return runProcess(configuration(), args);
   }
   async function execute(action, confirmation = '', selection = {}) {
@@ -64,23 +68,28 @@ export function createController(options = {}, runProcess = runCLI) {
       if (options.allowWrites === false) throw new Error('Writes disabled by saved allowWrites: false.');
       if (confirmation !== action) throw new Error('Confirm the exact action.');
     }
+    const resourceWrite = mode === 'original' && ['install', 'switch', 'restore'].includes(action);
+    if (resourceWrite && options.method && options.method !== 'in-place') throw new Error('请先在插件页选择「原位应用」。');
     busy = true;
+    let source = options.sourceDirectory;
     try {
       if (action === 'prepare' || action === 'install') {
         if (action === 'install') {
           const check = await command('check');
-          if (!check.eligible) throw new Error(check.reason || 'This installation does not support original-mode localization. No copy was created.');
+          if (check.protectedInstall || check.runtimeOnly || !check.eligible) throw new Error(check.reason || 'This installation does not support original-mode localization. No copy was created.');
+          source = check.source ?? source;
+          if (selection.expectedSource && selection.expectedSource !== source) throw new Error('安装位置已改变，请刷新后重新确认。');
         }
         // An explicitly chosen Gateway file is validated by prepare-copy itself.
         if (action === 'install' || !options.gatewayProfile) {
           const detected = await command('detect');
           if (!detected.configured3p || detected.provider !== 'gateway') throw new Error('Claude is not configured for 3p Gateway. Configure it in magpie first.');
         }
-        try { await command('plan', language); }
+        try { await command('plan', language, source); }
         catch (error) {
           if (!/^(?:Error: )?Missing compatible zh-Han[st] base\/dynamic catalogs\./.test(error.message)) throw error;
           await command('import-cache', language);
-          await command('plan', language);
+          await command('plan', language, source);
         }
       }
       if (mode === 'original' && action === 'switch') {
@@ -93,11 +102,16 @@ export function createController(options = {}, runProcess = runCLI) {
           return await command('switch', language);
         }
       }
-      return await command(action, language);
-    } finally { busy = false; }
+      return await command(action, language, source);
+    } catch (error) {
+      if (resourceWrite && /\b(?:EACCES|EPERM|EROFS)\b|access (?:is )?denied/i.test(error.message)) {
+        throw new Error('当前账户无法写入应用或备份目录。请检查目录是否只读，以及当前账户是否有正常写入权限。可在恢复已有更改后选择「启动时加载」。', { cause: error });
+      }
+      throw error;
+    } finally { busy = false; phase = undefined; }
   }
   async function sync() {
-    if (options.autoSync !== true || options.allowWrites === false) return { state: 'disabled' };
+    if ((mode === 'original' && options.method) || options.autoSync !== true || options.allowWrites === false) return { state: 'disabled' };
     if (busy) return { state: 'busy' };
     busy = true;
     try {
@@ -109,14 +123,15 @@ export function createController(options = {}, runProcess = runCLI) {
       await command('switch');
       return lastSync = { state: 'switched', locale: locale() };
     } catch (error) { return lastSync = { state: 'deferred', reason: error.message }; }
-    finally { busy = false; }
+    finally { busy = false; phase = undefined; }
   }
   return {
     execute, sync,
+    hasOriginalTransaction: () => fs.existsSync(path.join(stateDirectory, 'original-state.json')),
     runtimeConfiguration: configuration,
     runtimeSource: () => runProcess(configuration(), ['runtime-source', ...sourceArgs()]),
-    async prepareRuntime(output, sourceDirectory = options.sourceDirectory) {
-      if (mode !== 'original' || options.allowWrites === false) throw new Error('Runtime localization is disabled.');
+    async prepareRuntime(output, sourceDirectory = options.sourceDirectory, runtimeCache) {
+      if (mode !== 'original' || options.method === 'in-place' || options.allowWrites === false) throw new Error('Runtime localization is disabled.');
       if (busy) throw new Error('Another plugin operation is running.');
       busy = true;
       try {
@@ -125,7 +140,7 @@ export function createController(options = {}, runProcess = runCLI) {
         const config = configuration();
         const localCatalog = path.join(config.cwd, '.catalogs');
         const selectedCatalog = options.catalogDirectory ?? (fs.existsSync(localCatalog) ? localCatalog : catalog);
-        const exportRuntime = () => runProcess(config, ['runtime-export', ...optional('--source', sourceDirectory), '--locale', locale(), '--catalog-dir', selectedCatalog, '--output', output]);
+        const exportRuntime = () => runProcess(config, ['runtime-export', ...optional('--source', sourceDirectory), '--locale', locale(), '--catalog-dir', selectedCatalog, '--output', output, ...optional('--runtime-cache', runtimeCache)]);
         try { return { ...await exportRuntime(), profileDirectory: detected.directory }; }
         catch (error) {
           if (!/^(?:Error: )?Missing compatible zh-Han[st] base\/dynamic catalogs\./.test(error.message)) throw error;
@@ -142,15 +157,88 @@ export function createController(options = {}, runProcess = runCLI) {
           for (const kind of ['base', 'dynamic']) await runProcess(config, ['catalog', 'fetch', '--kind', kind, '--locale', locale(), '--catalog-dir', selectedCatalog]);
           return { ...await exportRuntime(), profileDirectory: detected.directory };
         }
-      } finally { busy = false; }
+      } finally { busy = false; phase = undefined; }
     },
-    state: () => ({ ...lastSync, busy, locale: locale(), allowWrites: options.allowWrites !== false }),
+    state: () => ({ ...lastSync, busy, phase: busy ? phase : undefined, locale: locale(), allowWrites: options.allowWrites !== false }),
     paths: async () => {
       const discovered = await command('discover');
       return { mode, stateDirectory, source: options.sourceDirectory || discovered.source, root, profile: options.profileDirectory || discovered.profileDirectory,
         gateway: options.gatewayProfile || discovered.gatewayProfile, catalog, cache: options.cacheDirectory || '',
         caches: options.cacheDirectory ? [options.cacheDirectory] : discovered.caches || [], issues: discovered.issues || {},
         locale: locale(), allowWrites: options.allowWrites !== false, autoSync: false };
+    }
+  };
+}
+// Keep page and tool actions on the same controller while replacing runtime hosts.
+export async function createLocalizationSession(options, store, makeRuntime, ownerCurrent, controllerFactory = createController) {
+  const initial = store.snapshot();
+  let preferences = initial.value, revision = initial.revision;
+  const exclusive = action => store.exclusive ? store.exclusive(action) : action();
+  function assertCurrent(expectedRevision) {
+    ownerCurrent();
+    if (store.revision && (store.revision() !== revision || (expectedRevision !== undefined && expectedRevision !== revision))) {
+      throw Object.assign(new Error('汉化设置已在另一个页面或宿主更改，请重新打开插件页。'), { status: 409 });
+    }
+  }
+  let controller = controllerFactory({ ...options, ...preferences });
+  const original = options.mode !== 'copy';
+  if (original && preferences.method === 'runtime' && controller.hasOriginalTransaction()) {
+    // Older plugin versions could write resources without saving a method.
+    let clean = false;
+    try { clean = ['restored', 'not-installed'].includes((await controller.execute('status')).status); } catch {}
+    if (!clean) {
+      preferences = { ...preferences, method: 'in-place' };
+      controller = controllerFactory({ ...options, ...preferences });
+    }
+  }
+  let changing = false;
+  let runtime;
+  function start(skipExisting) {
+    runtime = makeRuntime({ ...preferences, runtimeAutoLoad: preferences.method === 'runtime' && preferences.runtimeAutoLoad }, controller, skipExisting);
+    void runtime.start();
+  }
+  await exclusive(() => { assertCurrent(); start(false); });
+  return {
+    paths: () => controller.paths(),
+    state: () => ({ ...controller.state(), busy: changing || controller.state().busy }),
+    checkCurrent: assertCurrent,
+    revision: () => revision,
+    execute: async (action, confirm, selection) => {
+      if (changing) throw new Error('正在切换汉化设置，请稍后重试。');
+      const run = () => {
+        assertCurrent(selection?.revision);
+        return controller.execute(action, confirm, selection);
+      };
+      return WRITES.includes(action) || action === 'launch' ? exclusive(run) : run();
+    },
+    get: () => ({ ...preferences }),
+    runtime: () => runtime.state(),
+    async save(next, expectedRevision) {
+      if (changing || controller.state().busy) throw new Error('其他操作进行中，请稍后重试。');
+      changing = true;
+      try { return await exclusive(async () => {
+        assertCurrent(expectedRevision);
+        if (next.method !== preferences.method) {
+          if (!original) throw new Error('独立测试副本不支持原位应用。');
+          if (next.method === 'in-place') {
+            if (options.allowWrites === false) throw new Error('喜鹊配置已禁用写入。');
+            const check = await controller.execute('check');
+            if (check.protectedInstall) throw new Error('MSIX 安装受系统保护，请使用启动时加载。');
+            if (check.runtimeOnly || !check.eligible) throw new Error('原位应用需要兼容的 Windows 解包安装。');
+          } else {
+            const transaction = await controller.execute('status');
+            if (!['restored', 'not-installed'].includes(transaction.status)) throw new Error('请先确认恢复原始资源，再切回启动时加载。');
+          }
+        }
+        await runtime.stopped();
+        // Only replace the old listener after its shutdown and owner check succeed.
+        assertCurrent(expectedRevision);
+        try { preferences = store.write(next); revision = store.revision(); }
+        catch (error) { start(true); throw error; }
+        controller = controllerFactory({ ...options, ...preferences });
+        start(true);
+        return { ...preferences };
+      }); } finally { changing = false; }
     }
   };
 }

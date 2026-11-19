@@ -114,13 +114,8 @@ export function buildRuntimeLocalization(source, catalogDirectory, locale, outpu
     if (hash !== ${JSON.stringify(sha256(Buffer.from(specJSON)))}) throw new Error('Select the matching generated .spec.json file.');
     return (${activateRuntimeCatalog.toString()})(JSON.parse(new TextDecoder().decode(bytes)));
   })().then(console.info, console.error);\n`;
-  const successMarker = 'CLAUDE_ZH_APPLIED_' + randomUUID().replaceAll('-', '');
   const automationOutput = output + '.automation.js', manifestOutput = output + '.automation.json';
-  const catalogSha256 = sha256(Buffer.from(specJSON));
-  const automation = runtimePickerAutomationSource(spec.locale, catalogSha256, successMarker);
-  const manifest = { version: 2, sourceExecutable: path.resolve(source, 'Claude.exe'), locale,
-    payload: path.resolve(automationOutput), payloadSha256: sha256(Buffer.from(automation)), successMarker,
-    catalogFile: path.resolve(specOutput), catalogSha256 };
+  const { automation, manifest } = pickerManifest(source, locale, output, sha256(Buffer.from(specJSON)));
   const artifacts = [[output, snippet], [specOutput, specJSON], [pickerOutput, picker],
     [automationOutput, automation], [manifestOutput, JSON.stringify(manifest, null, 2)]];
   if (artifacts.some(([file]) => fs.existsSync(file))) throw new Error('Output already exists. Choose a new output filename.');
@@ -131,6 +126,15 @@ export function buildRuntimeLocalization(source, catalogDirectory, locale, outpu
     automationManifest: path.resolve(manifestOutput), locale, runtimeUrl: spec.runtimeUrl, runtimeSha256: spec.runtimeSha256,
     storeExport: spec.storeExport, baseMessages: Object.keys(spec.base).length, dynamicMessages: Object.keys(spec.dynamic).length,
     automaticNextLaunch: false, originalApplicationModified: false, originalProfileModifiedByBuilder: false };
+}
+
+export function pickerManifest(source, locale, output, catalogSha256) {
+  const successMarker = 'CLAUDE_ZH_APPLIED_' + randomUUID().replaceAll('-', '');
+  const automation = runtimePickerAutomationSource(locale, catalogSha256, successMarker);
+  const manifest = { version: 2, sourceExecutable: path.resolve(source, 'Claude.exe'), locale,
+    payload: path.resolve(output + '.automation.js'), payloadSha256: sha256(Buffer.from(automation)), successMarker,
+    catalogFile: path.resolve(output + '.spec.json'), catalogSha256 };
+  return { automation, manifest };
 }
 
 export function runtimeAutomationSource(spec, successMarker) {
@@ -168,9 +172,27 @@ export function runtimePickerAutomationSource(locale, catalogSha256, successMark
     if(hash!==${JSON.stringify(catalogSha256)})throw new Error('Catalog file changed.');
     const spec=JSON.parse(new TextDecoder().decode(bytes));
     if(spec.locale!==desired)throw new Error('Wrong catalog locale.');
+    const setup=['/setup-desktop-3p','/setup-desktop-3p/'].includes(location.pathname);
+    const heading=spec.base?.on79ZcGd72,search=spec.base?.pyTWlkS60A;
+    if(setup&&(!heading||heading==='Configure third-party inference'||!search||search==='Search settings'))throw new Error('Settings messages missing from the frontend catalog.');
     if(!globalThis.claudeChineseRuntime)await (${activate})(spec);
     const deadline=Date.now()+15000;
-    while(Date.now()<deadline){const s=globalThis.claudeChineseRuntime.status();if(s.messagesLocale===desired&&s.catalogRequestsServed>=2&&!s.restored){console.info(${JSON.stringify(successMarker)});return;}await new Promise(resolve=>setTimeout(resolve,100));}
+    while(Date.now()<deadline){
+      const s=globalThis.claudeChineseRuntime.status();
+      const settingsReady=!setup||(document.querySelector('header')?.textContent.includes(heading)&&Array.from(document.querySelectorAll('input')).some(el=>el.getAttribute('aria-label')===search||el.placeholder===search));
+      if(s.messagesLocale===desired&&s.catalogRequestsServed>=2&&!s.restored&&settingsReady){
+        const marker=${JSON.stringify(successMarker)};
+        console.info(marker);
+        const status=document.createElement('output');
+        status.id=marker;
+        status.style.cssText='position:fixed;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);pointer-events:none';
+        document.body.append(status);
+        status.textContent=desired==='zh-Hans'?'简体中文已加载':'繁體中文已載入';
+        setTimeout(()=>status.remove(),30000);
+        return;
+      }
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
     throw new Error('Chinese catalog application was not acknowledged.');
   })().catch(error=>console.error('CLAUDE_ZH_AUTOMATION_FAILED',error.message));`;
   return source.split('\n').map(line => line.trim()).join(' ') + '\n';

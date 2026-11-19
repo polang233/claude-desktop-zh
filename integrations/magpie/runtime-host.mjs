@@ -3,7 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { defaultLayout } from '../../lib/discover.mjs';
-import { assertPlainDirectory, localeValue, sha256 } from '../../lib/common.mjs';
+import { pruneRuntimeRuns } from './runtime-retention.mjs';
+import { withRuntimeLock } from '../../lib/runtime-lock.mjs';
+import { assertPlainDirectory, localeValue, readJSON, sha256, writeJSON } from '../../lib/common.mjs';
 
 const pluginDirectory = fileURLToPath(new URL('.', import.meta.url));
 const projectDirectory = fileURLToPath(new URL('../../', import.meta.url));
@@ -61,13 +63,13 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
   const startProcess = dependencies.spawn ?? spawn;
   const registry = dependencies.registrySnapshot ?? registrySnapshot;
   let current = { state: 'not-started', locale: options.locale ?? 'zh-Hans', automaticNextLaunch: false };
-  let starting, pending, timer, watcher, stateFile, owner, attemptedRevision;
+  let starting, pending, retiring, timer, watcher, stateFile, owner, attemptedRevision, preferenceHash;
   let stopRequested = false, ownerChanged = false;
   function publish(next) {
     const previous = current;
     current = next;
     if (stateFile) {
-      try { fs.writeFileSync(stateFile, JSON.stringify({ ...current, parentProcessId: process.pid }, null, 2)); } catch {}
+      try { fs.writeFileSync(stateFile, JSON.stringify({ ...current, reportDirectory: path.dirname(stateFile), parentProcessId: process.pid }, null, 2)); } catch {}
     }
     const message = next.state === 'waiting-for-normal-exit' && previous.state !== next.state
       ? '请通过 Claude 的“文件 → 退出”正常退出，等待中文准备完成。'
@@ -78,9 +80,14 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
       try { Promise.resolve(input.client?.tui?.showToast({ body: { title: 'Claude 中文', message, variant: 'info' } })).catch(() => {}); } catch {}
     }
   }
+  function readPreferenceHash() {
+    if (!dependencies.preferenceFile) return;
+    try { return sha256(fs.readFileSync(dependencies.preferenceFile)); }
+    catch (error) { if (error.code === 'ENOENT') return 'missing'; throw error; }
+  }
   function ownsRegistry() {
     if (stopRequested || ownerChanged) return false;
-    try { if (sha256(fs.readFileSync(owner.file)) === owner.hash) return true; } catch {}
+    try { if (sha256(fs.readFileSync(owner.file)) === owner.hash && readPreferenceHash() === preferenceHash) return true; } catch {}
     ownerChanged = true;
     publish({ ...current, state: 'owner-changed', automaticNextLaunch: false });
     return false;
@@ -93,18 +100,26 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     }
     return watcher.finished;
   }
+  function releaseRun() {
+    if (!stateFile) return;
+    try { writeJSON(stateFile, { ...readJSON(stateFile), released: true }); } catch {}
+    stateFile = undefined;
+  }
   function stop() {
+    if (stopRequested) return;
     stopRequested = true;
     clearTimeout(timer);
     stopWatcher();
     publish({ ...current, state: watcher ? 'stopping' : 'stopped', automaticNextLaunch: false });
+    retiring = Promise.resolve(pending).then(stopWatcher).then(releaseRun);
+    retiring.catch(() => {});
   }
   async function stopped() {
     stop();
     let timeout;
     try {
       await Promise.race([
-        (async () => { await pending; await stopWatcher(); })(),
+        retiring,
         new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Watcher has not stopped yet. Try again shortly.')), 10_000); })
       ]);
     } finally { clearTimeout(timeout); }
@@ -118,6 +133,7 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
       '-SetupProfileDirectory', bundle.profileDirectory, '-SetupStateDirectory', path.join(base, 'setup-state'),
       '-SetupNodeExecutable', config.executable, '-SetupCliPath', config.cli];
     if (dependencies.skipClaudeStartedThrough) args.push('-SkipClaudeStartedThrough', dependencies.skipClaudeStartedThrough);
+    if (dependencies.preferenceFile) args.push('-PreferenceFile', dependencies.preferenceFile, '-PreferenceHash', preferenceHash);
     const child = startProcess('powershell.exe', args, { cwd: config.cwd, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     let resolveExit;
     const active = { stopFile, finished: new Promise(resolve => { resolveExit = resolve; }), stopping: false };
@@ -136,7 +152,9 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
             const result = JSON.parse(line);
             if (result.state === 'WaitingForNormalExit') publish({ ...current, state: 'waiting-for-normal-exit', setupState: result.state, automaticNextLaunch: false });
             else if (result.state === 'RuntimeSetupReady') publish({ ...current, setupState: result.state, setupChanged: result.changed === true, setupJournal: result.journal });
-            else if (typeof result.state === 'string') publish({ ...current, lastResult: result.state, lastApplicationPid: result.applicationPid ?? 0 });
+            else if (result.state === 'LoadingLanguage') publish({ ...current, progress: 'loading', lastResult: undefined, lastApplicationPid: result.applicationPid });
+            else if (result.state === 'WaitingForClaude') publish({ ...current, progress: undefined, lastResult: undefined });
+            else if (typeof result.state === 'string') publish({ ...current, progress: undefined, lastResult: result.state, lastApplicationPid: result.applicationPid ?? 0 });
           } catch { /* Only fixed JSON result lines are consumed. */ }
         }
       }
@@ -147,7 +165,7 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     function ended(state, exitCode) {
       if (watcher !== active) return;
       watcher = undefined;
-      if (stopRequested || !active.stopping) publish({ ...current, state: stopRequested ? 'stopped' : state, exitCode, automaticNextLaunch: false });
+      if (stopRequested || !active.stopping) publish({ ...current, state: stopRequested ? 'stopped' : state, progress: undefined, exitCode, automaticNextLaunch: false });
       resolveExit();
     }
     child.once('error', () => ended('watcher-start-failed'));
@@ -180,13 +198,16 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     if (!ownsRegistry()) return;
     if (controller.state?.().busy) return;
     attemptedRevision = binding.revision;
+    releaseRun();
     const base = dependencies.runtimeDirectory ?? path.join(defaultLayout().originalStateDirectory, 'runtime');
     assertPlainDirectory(base);
     fs.mkdirSync(base, { recursive: true });
     const run = fs.mkdtempSync(path.join(base, 'host-'));
     stateFile = path.join(run, 'status.json');
     publish({ ...current, reportDirectory: run });
-    const bundle = await controller.prepareRuntime(path.join(run, 'language.js'), binding.source);
+    // One host sweeps retired runs in the background. New watchers can start immediately.
+    void withRuntimeLock(base, () => pruneRuntimeRuns(base), 0).catch(() => {});
+    const bundle = await controller.prepareRuntime(path.join(run, 'language.js'), binding.source, path.join(base, 'catalog-cache'));
     if (!ownsRegistry()) return;
     if (!bundle.profileDirectory || !path.isAbsolute(bundle.profileDirectory)) throw new Error('Missing original profile binding.');
     let confirmed;
@@ -203,6 +224,7 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
     pending = reconcile().catch(error => {
       if (!stopRequested && !ownerChanged) publish({ ...current, state: 'preparation-failed', automaticNextLaunch: false, ...preparationFailure(error) });
     }).then(() => {
+      if (ownerChanged) void Promise.resolve(stopWatcher()).then(releaseRun).catch(() => {});
       if (!stopRequested && !ownerChanged) {
         timer = setTimeout(cycle, dependencies.pollIntervalMs ?? UPDATE_POLL_MS);
         timer.unref();
@@ -222,6 +244,7 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
       try {
         current = { ...current, locale: localeValue(options.locale) };
         owner = registry(input.directory, options);
+        preferenceHash = readPreferenceHash();
         return starting = cycle();
       } catch (error) {
         publish({ ...current, state: 'preparation-failed', ...preparationFailure(error) });
