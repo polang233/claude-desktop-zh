@@ -14,6 +14,12 @@ MSIX 安装受系统保护，前端封装在 ASAR 的版本也只支持运行时
 
 语言、方式和自动加载偏好保存在插件状态目录中。插件为新原位事务使用其中的 `resource-backup` 子目录，已有旧事务继续使用原备份。浏览器工作台与插件页共用设置，其他宿主更改偏好后，旧页需要重新打开。浏览器入口由 `claude_zh_workbench` 工具提供，会话地址仅供自己使用。
 
+## 侧栏提示「127.0.0.1 拒绝连接」
+
+打开插件页时，喜鹊通过本机回环地址连接工作台。多个喜鹊宿主共用同一份插件时，侧栏沿用仍有效的会话；该宿主退出后，其他有效宿主会接管。若页面恰好在切换期间打开，可稍后重新打开侧栏。
+
+仍无法连接时，可在当前喜鹊实例调用 `claude_zh_workbench`，直接在本机打开它返回的私有地址。`claude_zh_sync_status` 中的 `sidebar: publication-failed` 表示插件未能发布侧栏地址，可检查插件安装目录的写入权限。反馈问题时只需附端口和状态，请省略地址里的 `#token`。
+
 ## 查看版本
 
 「Claude 中文」页面在 logo 下方显示当前安装版本。点击「claude-desktop-zh」打开项目仓库，点击「看看他还做了什么」打开作者主页。公开版本见 [npm](https://www.npmjs.com/package/magpie-claude-zh)，更新说明见 [GitHub Releases](https://github.com/polang233/claude-desktop-zh/releases)。反馈时请附上插件版本、Claude 版本和加载状态。

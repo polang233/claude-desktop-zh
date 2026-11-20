@@ -53,7 +53,7 @@
     if (globalThis.claudeChineseSession) { connect(); return; }
     if (location.hostname === 'wails.localhost' || location.hostname === 'localhost' || location.protocol === 'wails:') {
       const script = document.createElement('script');
-      script.src = '.runtime-session.js';
+      script.src = '.runtime-session/current.js';
       script.onload = connect;
       script.onerror = () => { status.textContent = '请关闭再启用插件，重新准备页面。'; };
       document.head.append(script);

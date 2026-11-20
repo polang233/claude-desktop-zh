@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ACTIONS, WRITES, createController } from './controller.mjs';
 import { validatePreferences } from './preferences.mjs';
+import { sessionProof } from './sidebar.mjs';
 
 const ASSETS = new Map([
   ['/', [fileURLToPath(new URL('./page/index.html', import.meta.url)), 'text/html; charset=utf-8']],
@@ -79,6 +80,12 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
     if (closed) return send(response, 503, { error: 'Workbench is closing. Reopen it from the plugin.' });
     if (!request.url.startsWith('/') || request.url.startsWith('//')) return send(response, 400, { error: 'Invalid request target.' });
     const target = new URL(request.url, 'http://127.0.0.1');
+    const challenge = /^\/sidebar-session\/([a-f0-9]{48})$/.exec(target.pathname);
+    if (challenge && settings.allowSandboxFrames && request.method === 'GET' && !request.headers.origin) {
+      if (!settings.current?.()) return send(response, 409, { error: 'Session retired.' });
+      response.writeHead(204, { ...SECURITY_HEADERS, 'x-claude-zh-proof': sessionProof(token, challenge[1]) });
+      return response.end();
+    }
     if (settings.allowSandboxFrames && request.headers.origin === 'null' && target.pathname.startsWith('/api/')) {
       response.setHeader('access-control-allow-origin', 'null');
       response.setHeader('vary', 'Origin');
@@ -211,6 +218,7 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
     clearTimeout(idleTimer);
     closing = (async () => {
       await listening?.catch(() => {});
+      await settings.onClose?.();
       const stopped = new Promise(resolve => {
         if (!server.listening) return resolve();
         server.close(resolve);

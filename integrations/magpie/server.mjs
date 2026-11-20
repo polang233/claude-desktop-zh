@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { atomicWrite, assertPlainDirectory, sha256 } from '../../lib/common.mjs';
+import { sha256 } from '../../lib/common.mjs';
+import { publishSidebar } from './sidebar.mjs';
 import { registrySnapshot } from './runtime-host.mjs';
 import { preferenceStore, validatePreferences } from './preferences.mjs';
 
@@ -40,36 +41,37 @@ export const ClaudeChinesePlugin = async (_input, options = {}) => {
     registrySnapshot: owner, ...(hosted ? { preferenceFile: store.file } : {}),
     skipClaudeStartedThrough: skipExisting ? (UNIX_EPOCH_TICKS + BigInt(Date.now()) * 10000n + 9999n).toString() : undefined
   }), () => { if (!current()) throw new Error('插件配置已更改，请重新打开页面。'); });
-  let workbench, opening;
+  let workbench, opening, sidebar;
   async function opened() {
     if (!opening) {
       opening = (async () => {
         if (!workbench?.address()) {
+          const sessionCurrent = () => { try { session.checkCurrent(); return true; } catch { return false; } };
+          let publication;
           workbench = createWorkbench(options, undefined, session, {
             allowSandboxFrames: hosted,
             keepAlive: hosted,
             openLink: hosted ? openLink : undefined,
-            current: hosted ? () => { try { session.checkCurrent(); return true; } catch { return false; } } : undefined,
+            current: hosted ? sessionCurrent : undefined,
+            onClose: () => publication?.stop(),
             revision: session.revision, get: session.get, runtime: session.runtime, save: hosted ? session.save : undefined
           });
           await workbench.listen();
+          if (hosted) {
+            publication = publishSidebar(fileURLToPath(new URL('./page/', import.meta.url)), workbench, sessionCurrent);
+            sidebar = publication;
+            await publication.ready;
+          }
         }
-        return { url: workbench.url(), note: 'Local buttons call the same CLI. Keep this session address private; it expires after 15 minutes without authenticated activity.' };
+        const note = sidebar?.state() === 'publication-failed'
+          ? '侧栏会话地址写入失败。可直接在本机打开此私有地址，请检查插件安装目录的写入权限。'
+          : 'Keep this local session address private.';
+        return { url: workbench.url(), note };
       })().finally(() => { opening = undefined; });
     }
     return opening;
   }
-  if (hosted) {
-    // This local capability file is excluded from both Git and npm artifacts.
-    void opened().then(page => {
-      owner();
-      const folder = fileURLToPath(new URL('./page/', import.meta.url));
-      assertPlainDirectory(folder);
-      const file = path.join(folder, '.runtime-session.js');
-      if (fs.existsSync(file) && fs.lstatSync(file).isSymbolicLink()) throw new Error('Unexpected UI session link.');
-      atomicWrite(file, 'globalThis.claudeChineseSession=' + JSON.stringify(page.url) + ';\n');
-    }).catch(() => { /* The status/maintenance tool can still open a fresh session. */ });
-  }
+  if (hosted) await opened().catch(() => { /* The workbench tool can retry startup. */ });
   return {
     tool: {
       claude_zh_manage: {
@@ -80,7 +82,8 @@ export const ClaudeChinesePlugin = async (_input, options = {}) => {
       claude_zh_sync_status: {
         description: '查看 Claude 中文准备和加载状态。',
         args: { type: 'object', properties: {}, additionalProperties: false },
-        execute: async () => JSON.stringify({ ...session.state(), automaticPolling: session.runtime().automaticNextLaunch, runtime: session.runtime() })
+        execute: async () => JSON.stringify({ ...session.state(), automaticPolling: session.runtime().automaticNextLaunch, runtime: session.runtime(),
+          ...(hosted ? { sidebar: sidebar?.state() ?? 'unavailable' } : {}) })
       },
       claude_zh_workbench: {
         description: '打开本机语言资源维护页面，返回本次会话地址。',
