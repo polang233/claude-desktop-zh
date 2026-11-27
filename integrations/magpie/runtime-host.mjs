@@ -126,7 +126,11 @@ export function createRuntimeHost(input, options, controller, dependencies = {})
   }
   function startWatcher(config, base, run, bundle) {
     const stopFile = path.join(run, 'stop');
-    const args = ['-NoProfile', '-NonInteractive', '-File', path.join(config.cwd, 'scripts', 'test-runtime-autoload.ps1'),
+    // ExecutionPolicy is machine/user state: a Restricted policy makes every
+    // -File launch fail before the script runs, which surfaced as a misleading
+    // "watcher-start-failed". The command-line scope overrides process/user
+    // policy for this child only and never changes system settings.
+    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(config.cwd, 'scripts', 'test-runtime-autoload.ps1'),
       '-Manifest', bundle.automationManifest, '-Watch', '-ActivateClaude', '-BuildDirectory', path.join(run, 'bridge'),
       '-ParentProcessId', String(process.pid), '-ParentExecutable', process.execPath, '-ParentStartedBefore', new Date().toISOString(),
       '-RegistryFile', owner.file, '-RegistrySha256', owner.hash, '-StopFile', stopFile,
