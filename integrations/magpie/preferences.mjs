@@ -8,7 +8,7 @@ import { assertPlainDirectory, sha256, writeJSON } from '../../lib/common.mjs';
 export function validatePreferences(value, fallbackMethod = 'runtime') {
   const method = value?.method === undefined ? fallbackMethod : value.method;
   if (!value || !['zh-Hans', 'zh-Hant'].includes(value.locale) || typeof value.runtimeAutoLoad !== 'boolean'
-      || !['runtime', 'in-place'].includes(method)
+      || !['runtime', 'in-place', 'third-party'].includes(method)
       || Object.keys(value).some(key => !['locale', 'runtimeAutoLoad', 'method'].includes(key))) throw new Error('Invalid language preferences.');
   return { locale: value.locale, runtimeAutoLoad: value.runtimeAutoLoad, method };
 }

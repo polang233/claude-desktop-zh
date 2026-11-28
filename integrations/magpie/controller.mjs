@@ -6,8 +6,9 @@ import { defaultLayout } from '../../lib/discover.mjs';
 
 // Fixed CLI commands only. Explicit paths take priority; discovery is lazy so
 // restoring a managed copy never depends on the original app or gateway.
-export const WRITES = ['install', 'prepare', 'switch', 'restore', 'import-cache'];
-export const ACTIONS = ['check', 'install', 'discover', 'detect', 'status', 'plan', 'import-cache', 'prepare', 'switch', 'restore', 'launch'];
+export const WRITES = ['install', 'prepare', 'switch', 'restore', 'import-cache', 'third-party-apply', 'third-party-restore'];
+export const ACTIONS = ['check', 'install', 'discover', 'detect', 'status', 'plan', 'import-cache', 'prepare', 'switch', 'restore', 'launch',
+  'third-party-status', 'third-party-apply', 'third-party-restore'];
 
 export function createController(options = {}, runProcess = runCLI) {
   let busy = false, phase;
@@ -17,6 +18,7 @@ export function createController(options = {}, runProcess = runCLI) {
   const mode = options.mode ?? 'original';
   if (!['original', 'copy'].includes(mode)) throw new Error('Mode must be original or copy.');
   const preferenceDirectory = options.stateDirectory || defaults.originalStateDirectory;
+  const thirdPartyStateDirectory = path.join(preferenceDirectory, 'third-party');
   // Historical CLI transactions live alongside preferences. New backups need an empty directory.
   const legacyManifest = path.join(preferenceDirectory, 'original-state.json');
   const stateDirectory = fs.existsSync(legacyManifest) ? preferenceDirectory : path.join(preferenceDirectory, 'resource-backup');
@@ -52,6 +54,9 @@ export function createController(options = {}, runProcess = runCLI) {
       case 'switch': args = mode === 'original' ? ['original-switch', '--state-dir', stateDirectory, '--locale', language, ...catalogArgs()] : ['switch', '--root', root, '--locale', language, ...catalogArgs()]; break;
       case 'restore': args = mode === 'original' ? ['original-restore', '--state-dir', stateDirectory] : ['restore', '--root', root]; break;
       case 'launch': args = ['launch', '--root', root]; break;
+      case 'third-party-status': args = ['third-party-status', ...optional('--source', source), '--state-dir', thirdPartyStateDirectory]; break;
+      case 'third-party-apply': args = ['third-party-apply', ...optional('--source', source), '--state-dir', thirdPartyStateDirectory, '--locale', language]; break;
+      case 'third-party-restore': args = ['third-party-restore', ...optional('--source', source), '--state-dir', thirdPartyStateDirectory]; break;
       default: throw new Error('Unsupported action.');
     }
     phase = action;
@@ -62,6 +67,8 @@ export function createController(options = {}, runProcess = runCLI) {
     const language = locale(selection.locale);
     if (mode === 'original' && ['prepare', 'launch'].includes(action)) throw new Error('Copy actions require explicit mode: copy. Original mode never creates or launches a separate profile.');
     if (mode === 'copy' && ['install', 'check'].includes(action)) throw new Error('Original-install actions require mode: original.');
+    if (mode === 'copy' && action.startsWith('third-party-')) throw new Error('Third-party patch actions require mode: original.');
+    if (action === 'third-party-apply' && options.method !== 'third-party') throw new Error('请先在插件页选择「内置补丁」。');
     if (action === 'launch' && confirmation !== action) throw new Error('Confirm the exact action.');
     if (busy) throw new Error('Another plugin operation is running.');
     if (WRITES.includes(action)) {
@@ -69,7 +76,7 @@ export function createController(options = {}, runProcess = runCLI) {
       if (confirmation !== action) throw new Error('Confirm the exact action.');
     }
     const resourceWrite = mode === 'original' && ['install', 'switch', 'restore'].includes(action);
-    if (resourceWrite && options.method && options.method !== 'in-place') throw new Error('请先在插件页选择「原位应用」。');
+    if (resourceWrite && action !== 'restore' && options.method && options.method !== 'in-place') throw new Error('请先在插件页选择「写入安装资源」。');
     busy = true;
     let source = options.sourceDirectory;
     try {
@@ -182,14 +189,15 @@ export async function createLocalizationSession(options, store, makeRuntime, own
   }
   let controller = controllerFactory({ ...options, ...preferences });
   const original = options.mode !== 'copy';
-  if (original && preferences.method === 'runtime' && controller.hasOriginalTransaction()) {
+  async function resourcesRestored() {
+    if (!controller.hasOriginalTransaction()) return true;
+    try { return ['restored', 'not-installed'].includes((await controller.execute('status')).status); }
+    catch { return false; }
+  }
+  if (original && preferences.method === 'runtime' && preferences.runtimeAutoLoad && !await resourcesRestored()) {
     // Older plugin versions could write resources without saving a method.
-    let clean = false;
-    try { clean = ['restored', 'not-installed'].includes((await controller.execute('status')).status); } catch {}
-    if (!clean) {
-      preferences = { ...preferences, method: 'in-place' };
-      controller = controllerFactory({ ...options, ...preferences });
-    }
+    preferences = { ...preferences, method: 'in-place', runtimeAutoLoad: false };
+    controller = controllerFactory({ ...options, ...preferences });
   }
   let changing = false;
   let runtime;
@@ -213,22 +221,28 @@ export async function createLocalizationSession(options, store, makeRuntime, own
     },
     get: () => ({ ...preferences }),
     runtime: () => runtime.state(),
-    async save(next, expectedRevision) {
+    async save(next, expectedRevision, confirmMethod) {
       if (changing || controller.state().busy) throw new Error('其他操作进行中，请稍后重试。');
       changing = true;
       try { return await exclusive(async () => {
         assertCurrent(expectedRevision);
-        if (next.method !== preferences.method) {
-          if (!original) throw new Error('独立测试副本不支持原位应用。');
-          if (next.method === 'in-place') {
-            if (options.allowWrites === false) throw new Error('喜鹊配置已禁用写入。');
-            const check = await controller.execute('check');
-            if (check.protectedInstall) throw new Error('MSIX 安装受系统保护，请使用启动时加载。');
-            if (check.runtimeOnly || !check.eligible) throw new Error('原位应用需要兼容的 Windows 解包安装。');
-          } else {
-            const transaction = await controller.execute('status');
-            if (!['restored', 'not-installed'].includes(transaction.status)) throw new Error('请先确认恢复原始资源，再切回启动时加载。');
+        const methodChanged = next.method !== preferences.method;
+        if (methodChanged) {
+          if (!original) throw new Error('独立测试副本不支持切换汉化方式。');
+          if (confirmMethod !== next.method) throw Object.assign(new Error('请确认切换汉化方式。'), { status: 400 });
+          if (preferences.method === 'third-party' && next.method !== 'third-party') {
+            const patch = await controller.execute('third-party-status').catch(() => null);
+            if (patch && ['installed', 'incomplete'].includes(patch.status)) {
+              throw Object.assign(new Error('请先恢复 Claude 原样，再切换汉化方式。'), { status: 409 });
+            }
           }
+          if (next.method === 'third-party' && !await resourcesRestored()) {
+            throw Object.assign(new Error('请先恢复已写入的安装资源，再启用内置补丁。'), { status: 409 });
+          }
+        }
+        if (methodChanged || next.method !== 'runtime') next = { ...next, runtimeAutoLoad: false };
+        if (original && next.method === 'runtime' && next.runtimeAutoLoad && !await resourcesRestored()) {
+          throw Object.assign(new Error('请先恢复原始资源，再启用启动时加载。'), { status: 409 });
         }
         await runtime.stopped();
         // Only replace the old listener after its shutdown and owner check succeed.

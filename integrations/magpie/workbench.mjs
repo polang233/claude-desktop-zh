@@ -100,7 +100,9 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
     // There is deliberately no HTTP endpoint that mints or reveals a token.
     if (!target.pathname.startsWith('/api/')) return send(response, 404, { error: 'Not found.' });
     if (!requireSession(request, response)) return;
-    if (settings.current && !settings.current()) return send(response, 409, { error: '插件配置或汉化设置已更改，请重新打开插件页。' });
+    if (settings.current && !settings.current()) return send(response, 409, {
+      code: 'session-retired', error: '插件配置或汉化设置已更改，请重新打开插件页。'
+    });
     const expectedRevision = request.headers['if-match'];
     if (request.method === 'POST' && expectedRevision !== undefined && settings.revision && settings.revision() !== expectedRevision) {
       return send(response, 409, { error: '汉化设置已更改，请重新打开插件页。' });
@@ -126,7 +128,7 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
       return send(response, 200, { runtime: runtimeState(), phase: controller.state().phase, revision: settings.revision?.(), preferences: settings.get?.() });
     }
     if (request.method === 'GET' && target.pathname === '/api/maintenance') {
-      let resources = 'unknown', transaction, source;
+      let resources = 'unknown', transaction, source, thirdParty;
       if (options.mode === 'copy') resources = 'copy';
       else if (activeJob || controller.state().busy) resources = 'busy';
       else {
@@ -143,18 +145,25 @@ export function createWorkbench(options = {}, runProcess, sharedController, sett
           const record = await controller.execute('status');
           transaction = { status: record.status, locale: record.locale, source: record.source, intact: record.intact };
         } catch { transaction = { status: 'unknown' }; }
+        try { thirdParty = await controller.execute('third-party-status'); }
+        catch { thirdParty = { mode: 'third-party', status: 'unknown', supported: false }; }
       }
-      return send(response, 200, { resources, transaction, source, runtime: runtimeState() });
+      return send(response, 200, { resources, transaction, source, thirdParty, runtime: runtimeState() });
     }
     if (request.method === 'POST' && target.pathname === '/api/preferences') {
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') return send(response, 415, { error: 'Use application/json.' });
-      let value;
-      try { value = validatePreferences(await readJSON(request), settings.get?.().method); }
+      let value, confirmMethod;
+      try {
+        const { confirmMethod: method, ...preferences } = await readJSON(request);
+        value = validatePreferences(preferences, settings.get?.().method);
+        if (method !== undefined && method !== value.method) throw new Error('Invalid method confirmation.');
+        confirmMethod = method;
+      }
       catch { return send(response, 400, { error: 'Invalid language preferences.' }); }
       if (!settings.save) return send(response, 409, { error: 'Open this page from the active magpie plugin to save settings.' });
       if (activeJob || controller.state().busy) return send(response, 409, { error: 'Another plugin operation is running.' });
       response.setTimeout(120_000);
-      activeJob = Promise.resolve().then(() => settings.save(value, request.headers['if-match']));
+      activeJob = Promise.resolve().then(() => settings.save(value, request.headers['if-match'], confirmMethod));
       try { const result = await activeJob; return send(response, 200, { ...result, revision: settings.revision?.() }); } finally { activeJob = undefined; }
     }
     if (request.method === 'POST' && target.pathname === '/api/run') {

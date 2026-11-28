@@ -90,6 +90,10 @@ test('default locale starts one hidden owner-bound watcher and stop uses a file'
   assert.equal(calls.length, 1);
   const [exe, args, settings] = calls[0];
   assert.equal(exe, 'powershell.exe');
+  const policyIndex = args.indexOf('-ExecutionPolicy');
+  assert(policyIndex > 0);
+  assert.equal(args[policyIndex + 1], 'Bypass');
+  assert(policyIndex < args.indexOf('-File'));
   assert(args.includes('-ParentProcessId')); assert(args.includes(String(process.pid)));
   assert(args.includes('-RegistrySha256')); assert(args.includes(sha256(fs.readFileSync(f.registry))));
   assert(args.includes('-SetupProfileDirectory')); assert(args.includes(path.join(f.root, 'profile')));

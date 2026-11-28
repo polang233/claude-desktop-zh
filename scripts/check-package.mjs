@@ -22,7 +22,11 @@ assert(icon.equals(fs.readFileSync(path.join(root, 'integrations/magpie/page/ico
 for (const file of [pkg.main, pkg.magpie.page.file, pkg.magpie.page.icon,
   'bin/claude-3p-zh.mjs', 'scripts/build-runtime-localization.mjs',
   'lib/module-exports.mjs', 'lib/vendor/js-tokens.mjs', 'lib/vendor/js-tokens.LICENSE',
-  'scripts/test-runtime-autoload.ps1', 'integrations/windows-runtime/RuntimeConsoleBridge.cs']) {
+  'scripts/test-runtime-autoload.ps1', 'integrations/windows-runtime/RuntimeConsoleBridge.cs',
+  'vendor/javaht/scripts/install_windows.ps1', 'vendor/javaht/scripts/run_plugin_patch.ps1',
+  'vendor/javaht/scripts/recover_third_party.ps1',
+  'vendor/javaht/resources/frontend-zh-CN.json', 'vendor/javaht/resources/frontend-zh-TW.json',
+  'vendor/javaht/LICENSE']) {
   assert(fs.statSync(path.join(root, file)).isFile(), 'Missing package file: ' + file);
 }
 assert(!pkg.dependencies && !pkg.optionalDependencies, 'Review runtime dependencies before publishing.');

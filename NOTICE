@@ -20,6 +20,13 @@ bundle is distributed by this project.
 The JavaScript tokenizer in lib/vendor/js-tokens.mjs is js-tokens 10.0.0 by
 Simon Lydell. Its MIT license is included in lib/vendor/js-tokens.LICENSE.
 
+The optional built-in patch mode bundles the Windows installer and Chinese
+resources from javaht/claude-desktop-zh-cn at commit
+f23b0292646bdd912f759cec1096d9814ebb01ef. That material is MIT licensed,
+copyright (c) 2025 javaht. The license and provenance are included under
+vendor/javaht/. This project's wrapper only invokes the pinned installer after
+an explicit user confirmation and UAC prompt.
+
 The GitHub mark in the plugin page is mark-github-16 from Primer Octicons.
 https://github.com/primer/octicons/blob/41c780575654fe4fef3fc4e91a46c8c0e91b233b/icons/mark-github-16.svg
 

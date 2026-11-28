@@ -52,7 +52,7 @@ input[role="switch"]:disabled {opacity:.5;cursor:default}#status {font-size:15px
 .method-note {margin:12px 0 20px;color:var(--muted);overflow-wrap:anywhere}
 .stage {margin:16px 0;padding-inline-start:12px;border-inline-start:3px solid var(--accent);overflow-wrap:anywhere}
 dialog {max-width:min(30rem,calc(100% - 32px));max-height:85vh;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:12px;padding:24px;background:var(--surface);color:var(--text)}
-dialog::backdrop {background:rgb(0 0 0 / .45)}
+dialog::backdrop {background:rgb(0 0 0 / .45);overflow:hidden;overscroll-behavior:contain}
 #confirm-details {white-space:pre-line;overflow-wrap:anywhere;margin:12px 0 20px}
 dialog .actions {justify-content:flex-end}
 #confirm-accept {background:var(--accent);color:var(--surface)}

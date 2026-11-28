@@ -101,6 +101,7 @@ test('maintenance reports runtime readiness independently of protected resources
   const commands = [];
   const workbench = createWorkbench({ projectDirectory }, async (_, args) => {
     commands.push(args[0]);
+    if (args[0] === 'third-party-status') return { mode: 'third-party', supported: true, status: 'not-installed' };
     return args[0] === 'original-status' ? { status: 'not-installed' } : { eligible: false, protectedInstall: true, runtimeOnly: true };
   }, undefined, { runtime: () => ({ state: 'watching', lastResult: 'Applied', reportDirectory: 'private-report' }) });
   try {
@@ -110,8 +111,10 @@ test('maintenance reports runtime readiness independently of protected resources
     assert.equal((await fetch(base + '/api/maintenance')).status, 401);
     const response = await fetch(base + '/api/maintenance', { headers: { authorization: 'Bearer ' + token } });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { resources: 'protected', transaction: { status: 'not-installed' }, runtime: { state: 'watching', lastResult: 'Applied' } });
-    assert.deepEqual(commands, ['original-check', 'original-status']);
+    assert.deepEqual(await response.json(), { resources: 'protected', transaction: { status: 'not-installed' },
+      thirdParty: { mode: 'third-party', supported: true, status: 'not-installed' },
+      runtime: { state: 'watching', lastResult: 'Applied' } });
+    assert.deepEqual(commands, ['original-check', 'original-status', 'third-party-status']);
   } finally { await workbench.close(); }
 });
 
@@ -136,9 +139,9 @@ test('malicious Host, Origin and cross-site fetches are refused, even with a val
 
 test('embedded UI needs its bearer for reads and settings, and accepts only validated preferences', async t => {
   let saved = { locale: 'zh-Hans', runtimeAutoLoad: true };
-  let saves = 0;
+  const confirmations = [];
   const workbench = createWorkbench(options, fakeRun, undefined, { allowSandboxFrames: true,
-    get: () => saved, save: async value => { saves++; saved = value; return value; } });
+    get: () => saved, save: async (value, _, confirmMethod) => { confirmations.push(confirmMethod); saved = value; return value; } });
   t.after(() => workbench.close());
   const address = await workbench.listen(), base = `http://127.0.0.1:${address.port}`;
   const token = new URLSearchParams(new URL(workbench.url()).hash.slice(1)).get('token');
@@ -149,12 +152,16 @@ test('embedded UI needs its bearer for reads and settings, and accepts only vali
   assert.equal(state.status, 200); assert.equal(state.headers.get('access-control-allow-origin'), 'null');
   assert.equal((await fetch(base + '/api/state', { headers: { ...headers, origin: 'https://unrelated.example' } })).status, 403);
   assert.equal((await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify({ ...saved, command: 'untrusted' }) })).status, 400);
-  assert.equal(saves, 0);
+  assert.deepEqual(confirmations, []);
   const changed = { locale: 'zh-Hant', runtimeAutoLoad: false, method: 'runtime' };
   const response = await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify(changed) });
   assert.equal(response.status, 200); assert.deepEqual(await response.json(), changed);
   assert.deepEqual((await (await fetch(base + '/api/state', { headers })).json()).preferences, changed);
-  assert.equal(saves, 1);
+  const methodChange = { ...changed, method: 'in-place' };
+  assert.equal((await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify({ ...methodChange, confirmMethod: 'runtime' }) })).status, 400);
+  const switched = await fetch(base + '/api/preferences', { method: 'POST', headers, body: JSON.stringify({ ...methodChange, confirmMethod: 'in-place' }) });
+  assert.equal(switched.status, 200); assert.deepEqual(await switched.json(), methodChange);
+  assert.deepEqual(confirmations, [undefined, 'in-place']);
 });
 
 test('a retired host cannot read state, save preferences, or run a maintenance action', async t => {

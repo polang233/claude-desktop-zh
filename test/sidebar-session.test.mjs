@@ -47,9 +47,12 @@ function fixture(t) {
     const ui = pageFixture();
     let destination;
     const context = vm.createContext({ ...ui, URL, URLSearchParams,
-      location: { hostname: 'wails.localhost', hash: '', replace: url => { destination = new URL(url); } } });
+      setTimeout, clearTimeout,
+      location: { href: 'http://wails.localhost/_magpie/plugin/' + 'a'.repeat(32) + '/index.html',
+        hash: '', replace: url => { destination = new URL(url); } } });
     ui.document.head = { append: loader => {
-      vm.runInContext(fs.readFileSync(path.join(folder, loader.src), 'utf8'), context);
+      assert.match(loader.src, /^\.runtime-session\/current\.js\?t=\d+$/);
+      vm.runInContext(fs.readFileSync(file, 'utf8'), context);
       loader.onload();
     } };
     await vm.runInContext(script, context);

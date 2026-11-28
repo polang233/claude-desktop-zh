@@ -99,3 +99,25 @@ test('original recovery needs no discovery and explicit read-only setting is pre
   const readonly = createController({ allowWrites: false }, async () => { throw new Error('must not execute'); });
   await assert.rejects(readonly.execute('install', 'install'), /Writes disabled/);
 });
+
+test('third-party actions use the separate patch state and require an explicit method switch', async () => {
+  const calls = [];
+  const controller = createController({ stateDirectory: 'saved-state', sourceDirectory: 'C:\\Claude\\app', method: 'third-party' },
+    async (_, args) => {
+      calls.push(args);
+      return args[0] === 'third-party-status' ? { mode: 'third-party', status: 'not-installed' } : { status: 'installed' };
+    });
+  await controller.execute('third-party-status');
+  await controller.execute('third-party-apply', 'third-party-apply', { locale: 'zh-Hant' });
+  await controller.execute('third-party-restore', 'third-party-restore');
+  assert.deepEqual(calls.map(args => args[0]), ['third-party-status', 'third-party-apply', 'third-party-restore']);
+  for (const args of calls) {
+    assert.equal(args[args.indexOf('--state-dir') + 1], path.join('saved-state', 'third-party'));
+    assert.equal(args[args.indexOf('--source') + 1], 'C:\\Claude\\app');
+  }
+  assert.equal(calls[1][calls[1].indexOf('--locale') + 1], 'zh-Hant');
+  const runtime = createController({ method: 'runtime' }, async () => { throw new Error('must not execute'); });
+  await assert.rejects(runtime.execute('third-party-apply', 'third-party-apply'), /先在插件页选择/);
+  const copy = createController({ mode: 'copy' }, async () => { throw new Error('must not execute'); });
+  await assert.rejects(copy.execute('third-party-status'), /require mode: original/);
+});

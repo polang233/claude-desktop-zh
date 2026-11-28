@@ -1,5 +1,17 @@
 # 开发交接
 
+## 2026-11-28 发布 1.2.1：内置补丁、可靠恢复与监听器修复
+
+新增第三种汉化方式「内置补丁（需管理员）」。插件随包携带固定提交 `f23b0292646bdd912f759cec1096d9814ebb01ef` 的 javaht Windows 安装器、简繁词库、MIT 许可证和来源说明。`lib/third-party.mjs` 是 CLI 的状态与执行入口，核对安装器、UAC 包装器和独立恢复器哈希，要求 Claude Desktop 已退出，再通过 UAC 包装器执行安装或恢复。补丁状态保存在插件自己的 `third-party` 子目录，不写入 Claude profile。
+
+恢复器从补丁备份还原 `app.asar`、`ion-dist.asar`、`Claude.exe` 和原始 `cowork-svc.exe`，校验恢复前后 SHA-256，失败时尝试回滚；成功后移除中文资源并把语言配置恢复为英文。喜鹊页面、偏好切换保护、CLI、工具枚举和 npm 清单均已接入。版本升为 `1.2.1`。
+
+合并了 [`pawamamama` 的 PR #9](https://github.com/polang233/claude-desktop-zh/pull/9)：运行时监听器以 `powershell.exe -ExecutionPolicy Bypass` 启动，避免 `Restricted` 策略在脚本运行前导致 `watcher-start-failed`。本次补了参数回归断言，覆盖 `-ExecutionPolicy Bypass` 位于 `-File` 之前。
+
+验证：完整回归 208 项，207 通过、0 失败、1 项文件符号链接夹具跳过；CLI help 和打包检查通过。Windows 11、Claude `6.28899.6.0` 实机完成内置补丁应用与恢复：恢复后四份文件 SHA-256 均与原始备份一致，三个中文 marker 文件与 ASAR 内中文资源已清除，`Claude.exe` 与 `cowork-svc.exe` 的 Authenticode 签名均为 `Valid`，`CoworkVMService` 已重新运行。语言配置会恢复为英文；目录所有权与 ACL 不会自动还原。
+
+本地喜鹊插件目录已用最终 `magpie-claude-zh-1.2.1.tgz` 替换并核对 68 个文件、内置补丁脚本和 PR #9 参数；旧目录保留为同级的 `.before-1.2.1-final-20261128`。喜鹊当时正在运行，热重载需按正常方式重启后生效。
+
 ## 2026-11-10 Claude 4.x 归档前端适配与运行时实测
 
 Claude 已从 3.6556.2.0 更新到 4.23118.1.0。前端不再提供 `resources/ion-dist` 目录，改为 `resources/ion-dist.asar`；最近一次自动加载仍在用 `sourceExecutable=Claude_3.6556.2.0` 的旧载荷，因此更新后不会加载中文。

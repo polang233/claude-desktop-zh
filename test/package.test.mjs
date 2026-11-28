@@ -22,7 +22,11 @@ test('published tarball installs and loads by package name with its runtime and 
   for (const required of ['integrations/magpie/server.mjs', 'integrations/magpie/page/index.html',
     'integrations/magpie/page/icon.png', 'integrations/windows-runtime/RuntimeConsoleBridge.cs',
     'scripts/test-runtime-autoload.ps1', 'scripts/build-runtime-localization.mjs', 'assets/logo.png',
-    'lib/module-exports.mjs', 'lib/vendor/js-tokens.mjs', 'lib/vendor/js-tokens.LICENSE']) {
+    'lib/module-exports.mjs', 'lib/vendor/js-tokens.mjs', 'lib/vendor/js-tokens.LICENSE',
+    'vendor/javaht/scripts/install_windows.ps1', 'vendor/javaht/scripts/run_plugin_patch.ps1',
+    'vendor/javaht/scripts/recover_third_party.ps1',
+    'vendor/javaht/resources/frontend-zh-CN.json', 'vendor/javaht/resources/frontend-zh-TW.json',
+    'vendor/javaht/LICENSE', 'docs/third-party-patch.md']) {
     assert(files.includes(required), 'Missing runtime asset: ' + required);
   }
   assert(!files.some(file => /^(?:\.handoff|\.catalogs|node_modules|test)\//.test(file)));

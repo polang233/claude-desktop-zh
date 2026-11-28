@@ -4,6 +4,7 @@
 
 - [安装步骤](first-install.md)
 - [插件设置与常见问题](magpie.md)
+- [内置补丁说明](third-party-patch.md)
 
 ## 开发
 

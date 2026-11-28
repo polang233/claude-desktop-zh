@@ -14,6 +14,9 @@ test('language preferences persist outside application data and still honor chan
   assert.deepEqual(store.read(), { locale: 'zh-Hans', runtimeAutoLoad: true, method: 'runtime' });
   store.write(saved);
   assert.deepEqual(preferenceStore({}, folder).read(), { ...saved, method: 'runtime' });
+  assert.deepEqual(store.write({ ...saved, method: 'third-party' }), { ...saved, method: 'third-party' });
+  assert.deepEqual(preferenceStore({}, folder).read(), { ...saved, method: 'third-party' });
+  store.write({ ...saved, method: 'runtime' });
   assert.deepEqual(preferenceStore({ locale: 'zh-Hans', runtimeAutoLoad: false }, folder).read(), { locale: 'zh-Hans', runtimeAutoLoad: false, method: 'runtime' });
   const before = fs.readFileSync(path.join(folder, 'language-preferences.json'));
   for (const value of [{ locale: 'en-US', runtimeAutoLoad: true }, { ...saved, command: 'arbitrary' }, { locale: 'zh-Hans' }]) assert.throws(() => store.write(value), /Invalid/);
@@ -42,29 +45,39 @@ test('shared preferences serialize method changes, reject stale hosts and keep i
   const first = await make(), other = await make();
   assert.deepEqual(first.get(), { ...old, method: 'runtime' });
   const manual = { ...old, method: 'in-place' };
-  await assert.rejects(first.save(manual), /MSIX/);
+  await assert.rejects(first.save(manual), /请确认/);
   assert.deepEqual(starts, [true, true]);
-  protectedInstall = false;
+  assert.deepEqual(calls, []);
+  const revision = first.revision();
   stopping = new Promise(resolve => { release = resolve; });
-  const switchMode = first.save(manual);
+  const switchMode = first.save(manual, revision, 'in-place');
   await assert.rejects(first.execute('install', 'install'), /正在切换/);
   assert.deepEqual(store.read(), { ...old, method: 'runtime' });
   release(); await switchMode;
   assert.deepEqual(starts, [true, true, false]);
-  assert.deepEqual(await store.read(), manual);
+  assert.deepEqual(store.read(), { ...manual, runtimeAutoLoad: false });
+  assert.deepEqual(calls, []);
+  await assert.rejects(first.execute('install', 'install'), /does not support/);
+  assert.deepEqual(calls, ['original-check']);
   await assert.rejects(other.save({ ...old, method: 'runtime' }), /另一个页面或宿主/);
   await assert.rejects(other.execute('restore', 'restore'), /另一个页面或宿主/);
   assert(!calls.includes('original-restore'));
   const reopened = await make();
   assert.equal(starts.at(-1), false);
   record = 'applying';
-  await assert.rejects(reopened.save({ ...old, method: 'runtime' }), /先确认恢复/);
-  await reopened.execute('restore', 'restore');
+  fs.mkdirSync(path.join(directory, 'resource-backup'));
+  fs.writeFileSync(path.join(directory, 'resource-backup', 'original-state.json'), '{}');
   const previousRevision = reopened.revision();
-  await reopened.save({ ...old, method: 'runtime' }, previousRevision);
+  await reopened.save({ ...old, method: 'runtime' }, previousRevision, 'runtime');
+  assert.equal(starts.at(-1), false);
+  const disabled = await make();
+  assert.deepEqual(disabled.get(), { ...old, method: 'runtime', runtimeAutoLoad: false });
+  await assert.rejects(disabled.save({ ...old, method: 'runtime' }), /先恢复/);
+  await disabled.execute('restore', 'restore');
+  await disabled.save({ ...old, method: 'runtime' });
   assert.equal(starts.at(-1), true);
   await assert.rejects(reopened.save(manual, previousRevision), /另一个页面或宿主/);
-  await assert.rejects(reopened.execute('install', 'install'), /先在插件页选择/);
+  await assert.rejects(disabled.execute('install', 'install'), /先在插件页选择/);
 });
 
 test('old transaction blocks startup loading even with runtime defaults; plugin backup folder stays separate', async t => {
@@ -84,4 +97,23 @@ test('old transaction blocks startup loading even with runtime defaults; plugin 
   }), () => {}, factory);
   assert.equal(calls.at(-1).at(-1), directory);
   assert.equal(session.get().method, 'in-place'); assert.equal(automatic, false);
+});
+
+test('a built-in patch must be restored before switching away from its method', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zh-third-method-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = preferenceStore({}, directory);
+  store.write({ locale: 'zh-Hans', runtimeAutoLoad: false, method: 'third-party' });
+  let patch = 'installed';
+  const session = await createLocalizationSession({ stateDirectory: directory }, store, () => ({
+    start() {}, state: () => ({}), stopped: async () => {}
+  }), () => {}, options => createController(options, async (_, args) => {
+    if (args[0] === 'third-party-status') return { mode: 'third-party', status: patch, supported: true };
+    throw new Error('Unexpected command ' + args[0]);
+  }));
+  const next = { locale: 'zh-Hans', runtimeAutoLoad: false, method: 'runtime' };
+  await assert.rejects(session.save(next, session.revision(), 'runtime'), /先恢复 Claude 原样/);
+  patch = 'restored';
+  await session.save(next, session.revision(), 'runtime');
+  assert.equal(session.get().method, 'runtime');
 });

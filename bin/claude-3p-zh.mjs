@@ -10,6 +10,7 @@ import { discover, discoverInstall, discoverProfiles, discoverCaches, defaultLay
 import { buildRuntimeLocalization } from '../scripts/build-runtime-localization.mjs';
 import { buildHostedRuntime } from '../lib/runtime-cache.mjs';
 import { runtimeSetupStatus, setupRuntime, restoreRuntimeSetup, windowsSetupGuard } from '../lib/runtime-setup.mjs';
+import { applyThirdParty, restoreThirdParty, thirdPartyStatus } from '../lib/third-party.mjs';
 
 const help = `claude-desktop-zh ${readJSON(new URL('../package.json', import.meta.url)).version} (Node 22+)
 
@@ -20,9 +21,15 @@ original-install [--source <app>] [--state-dir <backup directory>] [--locale zh-
 original-status  [--state-dir <backup directory>]
 original-switch  [--state-dir <backup directory>] --locale zh-Hans|zh-Hant
 original-restore [--state-dir <backup directory>]
+third-party-status [--source <app>] [--state-dir <state directory>]
+third-party-apply  [--source <app>] [--state-dir <state directory>] --locale zh-Hans|zh-Hant
+third-party-restore [--source <app>] [--state-dir <state directory>]
 
 Original resource commands change language resources only and preserve existing user data.
-Protected MSIX/WindowsApps packages are refused; no automatic permission changes.
+Original resource commands refuse protected MSIX/WindowsApps packages.
+Third-party patch commands run the pinned javaht patch with an elevation prompt,
+may repair application-directory ACLs after confirmation, and restore from its
+own backup set.
 
 inspect       [--source <Claude app directory or Claude.app>]
 detect-3p     [--profile-dir <Claude-3p directory>]
@@ -109,6 +116,9 @@ async function main() {
     case 'original-status': result = statusOriginal(stateDirectory()); break;
     case 'original-switch': result = await locked(stateDirectory(), () => switchOriginal(stateDirectory(), directory(), locale())); break;
     case 'original-restore': result = await locked(stateDirectory(), () => restoreOriginal(stateDirectory())); break;
+    case 'third-party-status': result = thirdPartyStatus({ source: options.source, stateDirectory: stateDirectory() }); break;
+    case 'third-party-apply': result = await applyThirdParty({ source: options.source, stateDirectory: stateDirectory(), locale: locale() }); break;
+    case 'third-party-restore': result = await restoreThirdParty({ source: options.source, stateDirectory: stateDirectory() }); break;
     case 'inspect': result = inspect(source()); break;
     case 'detect-3p': result = detect3p(options['profile-dir'] ?? profile().directory); break;
     case 'plan': result = plan(source(), directory(), locale()).report; break;
