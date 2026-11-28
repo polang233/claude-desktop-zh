@@ -1,6 +1,6 @@
 # 当前状态
 
-2026-11-28，版本 `1.2.1`。Windows 默认使用运行时方式加载中文；新增随包固定并校验的 javaht 内置补丁方式，包含独立恢复器，可从备份还原应用文件与 `cowork-svc.exe`。合并 PR #9 后，监听器以进程级 `-ExecutionPolicy Bypass` 启动，不再受用户 `Restricted` 执行策略影响。
+2026-11-28，版本 `1.2.1` 已发布。Windows 默认使用运行时方式加载中文；新增随包固定并校验的 javaht 内置补丁方式，包含独立恢复器，可从备份还原应用文件与 `cowork-svc.exe`。合并 PR #9 后，监听器以进程级 `-ExecutionPolicy Bypass` 启动，不再受用户 `Restricted` 执行策略影响。
 
 | 项目 | 验证范围 |
 | --- | --- |
@@ -9,6 +9,7 @@
 | 语言资源 | 官方简体/繁体基础各匹配 42,171/42,170 条（约 98.8%），动态 51/51 |
 | 前端归档 | Windows 商店版 `ion-dist.asar` 文件表、运行时 JS、`en-US` 资源解析通过 |
 | Magpie 本地安装 | 已用最终 `1.2.1` tarball 替换本地插件目录，68 个文件、内置补丁脚本与执行策略参数核对通过 |
+| npm / GitHub 发布 | npm `latest=1.2.1`；GitHub Release 资产已上传；registry 与 GitHub 包 SHA-256 一致 |
 | 旧版资源写入 | 仅适用于未打包旧目录；商店应用明确拒绝写入 |
 | 运行时监听器 | PR #9 的 `-ExecutionPolicy Bypass` 参数回归通过；未在策略为 `Restricted` 的独立机器复现 |
 | 内置补丁 | Windows 11 实机应用和恢复通过；四份文件哈希与原始备份一致，签名恢复有效，中文资源清除，Cowork 服务重启 |

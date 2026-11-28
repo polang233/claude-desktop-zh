@@ -12,6 +12,8 @@
 
 本地喜鹊插件目录已用最终 `magpie-claude-zh-1.2.1.tgz` 替换并核对 68 个文件、内置补丁脚本和 PR #9 参数；旧目录保留为同级的 `.before-1.2.1-final-20261128`。喜鹊当时正在运行，热重载需按正常方式重启后生效。
 
+发布已完成：`main` 与 `v1.2.1` 推送到 GitHub，Release 上传 tarball 和 `SHA256SUMS`；npm `latest=1.2.1`。发布 tarball 为 5,191,616 字节，SHA-256 `da9f50f61fd24b3f39fde83dc71e9f6c81424e1985f4590aea9f52bb8a19ae48`，registry 下载包与 GitHub 资产逐字节一致。
+
 ## 2026-11-10 Claude 4.x 归档前端适配与运行时实测
 
 Claude 已从 3.6556.2.0 更新到 4.23118.1.0。前端不再提供 `resources/ion-dist` 目录，改为 `resources/ion-dist.asar`；最近一次自动加载仍在用 `sourceExecutable=Claude_3.6556.2.0` 的旧载荷，因此更新后不会加载中文。

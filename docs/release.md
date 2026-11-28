@@ -1,12 +1,12 @@
 # npm 发布与插件收录
 
-项目：`claude-desktop-zh`。npm：`magpie-claude-zh`。首版：`0.1.0`。
+项目：`claude-desktop-zh`。npm：`magpie-claude-zh`。当前版本：`1.2.1`。
 
-0.1.0 已发布至 [npm](https://www.npmjs.com/package/magpie-claude-zh) 和 [GitHub Releases](https://github.com/polang233/claude-desktop-zh/releases/tag/v0.1.0)。registry下载包与GitHub包的SHA256一致，按包名隔离安装及官方magpie源码宿主加载通过。真实magpie列表显示和npm安装后的Claude启动GUI另行验收。
+1.2.1 已发布至 [npm](https://www.npmjs.com/package/magpie-claude-zh) 和 [GitHub Releases](https://github.com/polang233/claude-desktop-zh/releases/tag/v1.2.1)。registry 的 latest 为 1.2.1，下载包与 GitHub 资产 SHA-256 一致。
 
 ## 发布内容
 
-根目录 `package.json` 提供 magpie 入口、设置页、简介和内嵌图标。npm 包包含 CLI、运行时脚本、Windows 适配器源码及使用文档。官方语言文件由插件在本机获取。
+根目录 `package.json` 提供 magpie 入口、设置页、简介和内嵌图标。npm 包包含 CLI、运行时脚本、Windows 适配器源码、内置补丁与恢复器，以及使用文档。运行时方式使用的官方语言文件由插件在本机获取。
 
 已有文件夹安装的用户，先在 magpie 中移除原安装条目，再添加 `magpie-claude-zh`。插件继续使用本机已有状态和备份目录。
 
@@ -17,7 +17,7 @@
 ```sh
 npm test
 npm run check
-npm pack --pack-destination .handoff/release-20261019
+npm pack --pack-destination <release-dir>
 ```
 
 包回归会把 tarball 安装到隔离目录，实际导入插件、调用 CLI，并核对页面、Windows 源码及发布文件清单。
@@ -34,7 +34,7 @@ npm pack --pack-destination .handoff/release-20261019
 
 ```sh
 npm login --registry=https://registry.npmjs.org/
-npm publish .handoff/release-20261019/magpie-claude-zh-0.1.0.tgz --access public
+npm publish <release-dir>/magpie-claude-zh-1.2.1.tgz --access public
 ```
 
 发布后核对 npm 的版本、repository、main、magpie.icon，并在真实 magpie 中刷新列表、安装、确认默认简体。首次准备及下次原入口启动按[安装步骤](first-install.md)验收。
